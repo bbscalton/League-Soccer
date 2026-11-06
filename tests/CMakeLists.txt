@@ -148,6 +148,25 @@ gtest_discover_tests(gameplayfootball_career_tests
   WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
 )
 
+# API protocol unit tests (headless, no display needed)
+add_executable(gameplayfootball_api_tests
+  api/protocol_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/api/api_protocol.cpp
+)
+
+target_include_directories(gameplayfootball_api_tests PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${GF_BOOST_INCLUDE_DIRS}
+)
+
+target_link_libraries(gameplayfootball_api_tests PRIVATE
+  GTest::gtest_main
+)
+
+gtest_discover_tests(gameplayfootball_api_tests
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+)
+
 # Exercise the production WAV loader when the SDL game is available.
 if(TARGET blunted2)
   add_executable(gameplayfootball_audio_tests audio/wav_loader_test.cpp)

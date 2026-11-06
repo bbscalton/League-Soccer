@@ -321,7 +321,14 @@ if(GAMEPLAYFOOTBALL_BUILD_GAME)
   add_library(datalib ${DATA_SOURCES} ${DATA_HEADERS})
   gf_target_includes(datalib)
 
-  set(LIBRARIES gamelib hidlib menulib datalib leaguelib blunted2
+  add_library(apilib ${API_SOURCES} ${API_HEADERS})
+  gf_target_includes(apilib)
+  target_link_libraries(apilib PRIVATE SQLite::SQLite3)
+  if(WIN32)
+    target_link_libraries(apilib PRIVATE ws2_32)
+  endif()
+
+  set(LIBRARIES gamelib hidlib menulib datalib leaguelib apilib blunted2
      SQLite::SQLite3)
   if(GF_SDL2_GFX_TARGET)
     list(APPEND LIBRARIES ${GF_SDL2_GFX_TARGET})

@@ -107,6 +107,9 @@ static LONG WINAPI CustomCrashHandler(EXCEPTION_POINTERS* pExceptionInfo) {
 #include "base/utils.hpp"
 #include "framework/scheduler.hpp"
 #include "hid/scriptedgamepad.hpp"
+#include "hid/apigamepad.hpp"
+#include "api/api_server.hpp"
+#include "api/league_api.hpp"
 #include "main.hpp"
 #include "managers/resourcemanagerpool.hpp"
 #include "managers/scenemanager.hpp"
@@ -130,6 +133,9 @@ using namespace blunted;
 
 GraphicsSystem* graphicsSystem;
 AudioSystem* audioSystem;
+
+// API server for external programmatic control
+static std::unique_ptr<api::APIServer> g_apiServer;
 
 std::shared_ptr<Scene2D> scene2D;
 std::shared_ptr<Scene3D> scene3D;
@@ -549,12 +555,42 @@ int main(int argc, const char** argv) {
 
   Initialize(*config);
 
-  srand(time(nullptr));
+  // Check for API mode seed override
+  int64_t apiSeed = config->GetInt("api_seed", -1);
+  if (apiSeed >= 0) {
+    srand(static_cast<unsigned int>(apiSeed));
+    printf("[API] Using deterministic seed: %lld\n", (long long)apiSeed);
+  } else {
+    srand(time(nullptr));
+  }
   rand();        // mingw32? buggy compiler? first value seems bogus
   randomseed();  // for the boost random
   fastrandomseed();
 
   int timeStep_ms = config->GetInt("physics_frametime_ms", 10);
+
+  // Initialize API server if enabled
+  if (config->GetBool("api_mode", false)) {
+    int apiPort = config->GetInt("api_port", api::kDefaultPort);
+    g_apiServer = std::make_unique<api::APIServer>();
+    
+    // Set up league data callbacks
+    g_apiServer->SetListLeaguesCallback([]() { return api::ListLeagues(); });
+    g_apiServer->SetListFixturesCallback([](int league_id) { return api::ListFixtures(league_id); });
+    g_apiServer->SetCreateFixtureCallback([](const std::string& json, std::string& error) {
+      int fixture_id;
+      return api::CreateFixture(json, fixture_id, error);
+    });
+    g_apiServer->SetExportLeagueDataCallback([]() { return api::ExportLeagueData(); });
+    
+    if (g_apiServer->Start(apiPort)) {
+      api::SetAPIServer(g_apiServer.get());
+      printf("[API] External control API server started on port %d\n", apiPort);
+    } else {
+      printf("[API] Failed to start API server on port %d\n", apiPort);
+      g_apiServer.reset();
+    }
+  }
 
   // database
 
@@ -702,6 +738,20 @@ int main(int argc, const char** argv) {
            controllers.size());
   }
 
+  // API mode: add API gamepads for external control of both teams
+  if (g_apiServer) {
+    auto homeGamepad = g_apiServer->GetTeamGamepad(0);
+    auto awayGamepad = g_apiServer->GetTeamGamepad(1);
+    if (homeGamepad) {
+      controllers.push_back(homeGamepad.get());
+      printf("[API] Home team API gamepad added\n");
+    }
+    if (awayGamepad) {
+      controllers.push_back(awayGamepad.get());
+      printf("[API] Away team API gamepad added\n");
+    }
+  }
+
   // sequences
 
   std::mutex
@@ -819,6 +869,13 @@ int main(int argc, const char** argv) {
 
   delete db;
   delete config;
+
+  // Shutdown API server
+  if (g_apiServer) {
+    g_apiServer->Stop();
+    api::SetAPIServer(nullptr);
+    g_apiServer.reset();
+  }
 
   Exit();
 
