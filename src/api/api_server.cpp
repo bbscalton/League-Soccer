@@ -25,7 +25,7 @@ APIPlayerAction ToAPIPlayerAction(const api::PlayerAction& src) {
   dst.special = src.special;
   return dst;
 }
-}
+}  // namespace
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -74,14 +74,18 @@ bool InitSockets() {
 bool GetJsonString(const std::string& json, const std::string& key, std::string& out) {
   std::string needle = "\"" + key + "\":";
   size_t pos = json.find(needle);
-  if (pos == std::string::npos) return false;
+  if (pos == std::string::npos)
+    return false;
   pos += needle.size();
-  while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
-  if (pos >= json.size() || json[pos] != '"') return false;
+  while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t'))
+    pos++;
+  if (pos >= json.size() || json[pos] != '"')
+    return false;
   pos++;
   size_t end = pos;
   while (end < json.size() && json[end] != '"') {
-    if (json[end] == '\\' && end + 1 < json.size()) end++;
+    if (json[end] == '\\' && end + 1 < json.size())
+      end++;
     end++;
   }
   out = json.substr(pos, end - pos);
@@ -91,9 +95,11 @@ bool GetJsonString(const std::string& json, const std::string& key, std::string&
 bool GetJsonInt(const std::string& json, const std::string& key, int& out) {
   std::string needle = "\"" + key + "\":";
   size_t pos = json.find(needle);
-  if (pos == std::string::npos) return false;
+  if (pos == std::string::npos)
+    return false;
   pos += needle.size();
-  while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t')) pos++;
+  while (pos < json.size() && (json[pos] == ' ' || json[pos] == '\t'))
+    pos++;
   out = atoi(json.c_str() + pos);
   return true;
 }
@@ -110,7 +116,8 @@ APIServer::~APIServer() {
 }
 
 bool APIServer::Start(int port) {
-  if (running.load()) return false;
+  if (running.load())
+    return false;
 
   if (!InitSockets()) {
     return false;
@@ -162,7 +169,8 @@ bool APIServer::Start(int port) {
 }
 
 void APIServer::Stop() {
-  if (!running.load()) return;
+  if (!running.load())
+    return;
 
   shouldStop.store(true);
 
@@ -199,11 +207,12 @@ void APIServer::AcceptLoop() {
     socklen_t addrLen = sizeof(clientAddr);
 #endif
 
-    int clientSocket = static_cast<int>(
-        accept(serverSocket, (struct sockaddr*)&clientAddr, &addrLen));
+    int clientSocket =
+        static_cast<int>(accept(serverSocket, (struct sockaddr*)&clientAddr, &addrLen));
 
     if (clientSocket == INVALID_SOCKET) {
-      if (shouldStop.load()) break;
+      if (shouldStop.load())
+        break;
       printf("[API] Accept failed: %d\n", SOCKET_ERROR_CODE);
       continue;
     }
@@ -252,9 +261,8 @@ void APIServer::HandleClient(int clientSocket) {
   // Remove from client list
   {
     std::lock_guard<std::mutex> lock(clientsMutex);
-    clientSockets.erase(
-        std::remove(clientSockets.begin(), clientSockets.end(), clientSocket),
-        clientSockets.end());
+    clientSockets.erase(std::remove(clientSockets.begin(), clientSockets.end(), clientSocket),
+                        clientSockets.end());
   }
 
   CLOSE_SOCKET(clientSocket);
@@ -314,7 +322,8 @@ std::string APIServer::ProcessMessage(const std::string& message) {
   }
 
   if (type == "quit") {
-    if (quitCallback) quitCallback();
+    if (quitCallback)
+      quitCallback();
     return SerializeAck("quit");
   }
 
@@ -363,6 +372,41 @@ std::string APIServer::ProcessMessage(const std::string& message) {
     return SerializeError("League export not available");
   }
 
+  if (type == "create_league") {
+    if (createLeagueCallback) {
+      std::string error;
+      int league_id = -1;
+      if (createLeagueCallback(message, league_id, error)) {
+        return "{\"type\":\"ack\",\"request\":\"create_league\",\"league_id\":" +
+               std::to_string(league_id) + "}";
+      }
+      return SerializeError(error);
+    }
+    return SerializeError("League creation not available");
+  }
+
+  if (type == "create_team") {
+    if (createTeamCallback) {
+      std::string error;
+      int team_id = -1;
+      if (createTeamCallback(message, team_id, error)) {
+        return "{\"type\":\"ack\",\"request\":\"create_team\",\"team_id\":" +
+               std::to_string(team_id) + "}";
+      }
+      return SerializeError(error);
+    }
+    return SerializeError("Team creation not available");
+  }
+
+  if (type == "list_teams") {
+    if (listTeamsCallback) {
+      int league_id = -1;
+      GetJsonInt(message, "league_id", league_id);
+      return listTeamsCallback(league_id);
+    }
+    return SerializeError("Team listing not available");
+  }
+
   return SerializeError("Unknown message type: " + type);
 }
 
@@ -373,7 +417,8 @@ void APIServer::SendResponse(int socket, const std::string& response) {
 
 std::shared_ptr<APIGamepad> APIServer::GetTeamGamepad(int teamId) {
   std::lock_guard<std::mutex> lock(gamepadMutex);
-  if (teamId < 0 || teamId > 1) return nullptr;
+  if (teamId < 0 || teamId > 1)
+    return nullptr;
   return teamGamepads[teamId];
 }
 

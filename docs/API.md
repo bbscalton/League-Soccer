@@ -225,6 +225,66 @@ Get all leagues.
 }
 ```
 
+#### create_league
+
+Create a new league.
+
+```json
+{
+  "type": "create_league",
+  "name": "My Custom League"
+}
+```
+
+**Response:**
+```json
+{
+  "type": "ack",
+  "request": "create_league",
+  "league_id": 5
+}
+```
+
+#### list_teams
+
+Get all teams, optionally filtered by league.
+
+```json
+{"type": "list_teams", "league_id": 1}
+```
+
+**Response:**
+```json
+{
+  "type": "teams",
+  "data": [
+    {"id": 1, "name": "Manchester United", "league_id": 1},
+    {"id": 2, "name": "Liverpool", "league_id": 1}
+  ]
+}
+```
+
+#### create_team
+
+Create a new team.
+
+```json
+{
+  "type": "create_team",
+  "name": "My Custom Team",
+  "league_id": 1
+}
+```
+
+**Response:**
+```json
+{
+  "type": "ack",
+  "request": "create_team",
+  "team_id": 25
+}
+```
+
 #### list_fixtures
 
 Get fixtures, optionally filtered by league.

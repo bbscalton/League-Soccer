@@ -308,6 +308,48 @@ class LeagueSoccerEnv:
             raise RuntimeError(response.get("message"))
         return response.get("data", [])
 
+    def create_league(self, name: str) -> int:
+        """
+        Create a new league.
+        
+        Args:
+            name: League name
+        
+        Returns:
+            New league ID
+        """
+        response = self._send({"type": "create_league", "name": name})
+        if response.get("type") == "error":
+            raise RuntimeError(response.get("message"))
+        return response.get("league_id", -1)
+
+    def list_teams(self, league_id: int = -1) -> List[Dict[str, Any]]:
+        """Get list of teams (optionally filtered by league)."""
+        response = self._send({"type": "list_teams", "league_id": league_id})
+        if response.get("type") == "error":
+            raise RuntimeError(response.get("message"))
+        return response.get("data", [])
+
+    def create_team(self, name: str, league_id: int = -1) -> int:
+        """
+        Create a new team.
+        
+        Args:
+            name: Team name
+            league_id: League ID to associate the team with (-1 for none)
+        
+        Returns:
+            New team ID
+        """
+        response = self._send({
+            "type": "create_team",
+            "name": name,
+            "league_id": league_id,
+        })
+        if response.get("type") == "error":
+            raise RuntimeError(response.get("message"))
+        return response.get("team_id", -1)
+
     def list_fixtures(self, league_id: int = -1) -> List[Dict[str, Any]]:
         """Get list of fixtures (optionally filtered by league)."""
         response = self._send({"type": "list_fixtures", "league_id": league_id})

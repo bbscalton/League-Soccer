@@ -30,6 +30,11 @@ using QuitCallback = std::function<void()>;
 // League data callbacks
 using ListLeaguesCallback = std::function<std::string()>;
 using ListFixturesCallback = std::function<std::string(int league_id)>;
+using ListTeamsCallback = std::function<std::string(int league_id)>;
+using CreateLeagueCallback =
+    std::function<bool(const std::string& json, int& league_id, std::string& error)>;
+using CreateTeamCallback =
+    std::function<bool(const std::string& json, int& team_id, std::string& error)>;
 using CreateFixtureCallback = std::function<bool(const std::string& json, std::string& error)>;
 using ImportLeagueDataCallback = std::function<bool(const std::string& json, std::string& error)>;
 using ExportLeagueDataCallback = std::function<std::string()>;
@@ -57,6 +62,9 @@ public:
   // Set callbacks for league data
   void SetListLeaguesCallback(ListLeaguesCallback cb) { listLeaguesCallback = cb; }
   void SetListFixturesCallback(ListFixturesCallback cb) { listFixturesCallback = cb; }
+  void SetListTeamsCallback(ListTeamsCallback cb) { listTeamsCallback = cb; }
+  void SetCreateLeagueCallback(CreateLeagueCallback cb) { createLeagueCallback = cb; }
+  void SetCreateTeamCallback(CreateTeamCallback cb) { createTeamCallback = cb; }
   void SetCreateFixtureCallback(CreateFixtureCallback cb) { createFixtureCallback = cb; }
   void SetImportLeagueDataCallback(ImportLeagueDataCallback cb) { importLeagueDataCallback = cb; }
   void SetExportLeagueDataCallback(ExportLeagueDataCallback cb) { exportLeagueDataCallback = cb; }
@@ -92,6 +100,9 @@ protected:
   QuitCallback quitCallback;
   ListLeaguesCallback listLeaguesCallback;
   ListFixturesCallback listFixturesCallback;
+  ListTeamsCallback listTeamsCallback;
+  CreateLeagueCallback createLeagueCallback;
+  CreateTeamCallback createTeamCallback;
   CreateFixtureCallback createFixtureCallback;
   ImportLeagueDataCallback importLeagueDataCallback;
   ExportLeagueDataCallback exportLeagueDataCallback;

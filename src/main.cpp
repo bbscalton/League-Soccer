@@ -583,6 +583,15 @@ int main(int argc, const char** argv) {
     g_apiServer->SetListLeaguesCallback([]() { return api::ListLeagues(); });
     g_apiServer->SetListFixturesCallback(
         [](int league_id) { return api::ListFixtures(league_id); });
+    g_apiServer->SetListTeamsCallback([](int league_id) { return api::ListTeams(league_id); });
+    g_apiServer->SetCreateLeagueCallback(
+        [](const std::string& json, int& league_id, std::string& error) {
+          return api::CreateLeague(json, league_id, error);
+        });
+    g_apiServer->SetCreateTeamCallback(
+        [](const std::string& json, int& team_id, std::string& error) {
+          return api::CreateTeam(json, team_id, error);
+        });
     g_apiServer->SetCreateFixtureCallback([](const std::string& json, std::string& error) {
       int fixture_id;
       return api::CreateFixture(json, fixture_id, error);
@@ -789,10 +798,22 @@ int main(int argc, const char** argv) {
   if (g_apiServer) {
     // Reset callback: set up match data and start a match
     g_apiServer->SetResetCallback([](const api::ResetParams& params, std::string& error) -> bool {
-      printf("[API] Reset requested: seed=%d, duration=%.1f min\n", params.seed,
-             params.match_duration_minutes);
+      printf("[API] Reset requested: seed=%d, home=%d, away=%d, duration=%.1f min\n", params.seed,
+             params.home_team_id, params.away_team_id, params.match_duration_minutes);
 
-      // Set seed if provided
+      // Check that tasks are available
+      if (!gameTask) {
+        error = "Game task not initialized";
+        printf("[API] Reset failed: gameTask is null\n");
+        return false;
+      }
+      if (!menuTask) {
+        error = "Menu task not initialized";
+        printf("[API] Reset failed: menuTask is null\n");
+        return false;
+      }
+
+      // Set seed if provided (must be done before match creation)
       if (params.seed >= 0) {
         srand(static_cast<unsigned int>(params.seed));
         randomseed();
@@ -803,10 +824,12 @@ int main(int argc, const char** argv) {
       // Set match duration in config (match reads it from there)
       if (params.match_duration_minutes > 0) {
         GetConfiguration()->Set("match_duration_minutes", params.match_duration_minutes);
+        printf("[API] Set match duration: %.1f minutes\n", params.match_duration_minutes);
       }
 
       // Stop any existing match
-      if (gameTask && gameTask->GetMatch()) {
+      if (gameTask->GetMatch()) {
+        printf("[API] Stopping existing match\n");
         gameTask->Action(e_GameTaskMessage_StopMatch);
       }
 
@@ -814,6 +837,7 @@ int main(int argc, const char** argv) {
       int homeTeam = params.home_team_id >= 0 ? params.home_team_id : 3;  // Barcelona
       int awayTeam = params.away_team_id >= 0 ? params.away_team_id : 8;  // Real Madrid
 
+      printf("[API] Setting up teams: home=%d, away=%d\n", homeTeam, awayTeam);
       menuTask->SetTeamIDs(std::to_string(homeTeam), std::to_string(awayTeam));
 
       // Set up controller sides - API gamepads control both teams
@@ -831,16 +855,32 @@ int main(int argc, const char** argv) {
         sides.push_back(side);
       }
       menuTask->SetControllerSetup(sides);
+      printf("[API] Controller setup: %zu controllers configured\n", sides.size());
 
       // Create MatchData
       MatchData* matchData = new MatchData(homeTeam, awayTeam);
+      if (!matchData) {
+        error = "Failed to create match data";
+        printf("[API] Reset failed: could not create MatchData\n");
+        return false;
+      }
       menuTask->SetMatchData(matchData);
 
-      // Start the match
+      // Stop menu scene and start the match
+      printf("[API] Starting match...\n");
       gameTask->Action(e_GameTaskMessage_StopMenuScene);
       gameTask->Action(e_GameTaskMessage_StartMatch);
 
-      printf("[API] Match started: %s vs %s\n", matchData->GetTeamData(0)->GetName().c_str(),
+      // Verify match was created
+      Match* match = gameTask->GetMatch();
+      if (!match) {
+        error = "Match failed to start";
+        printf("[API] Reset failed: GetMatch() returned null after StartMatch\n");
+        return false;
+      }
+
+      printf("[API] Match started successfully: %s vs %s\n",
+             matchData->GetTeamData(0)->GetName().c_str(),
              matchData->GetTeamData(1)->GetName().c_str());
 
       return true;
