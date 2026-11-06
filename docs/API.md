@@ -42,14 +42,18 @@ the first argument to be a config file path. Set all options in `football.config
 
 When `api_mode` is enabled, the game:
 
-1. **Skips all user prompts** - No intro screen, no "Press any key to continue",
-   no main menu, no controller selection
-2. **Starts a default match immediately** - Barcelona vs Real Madrid loads automatically
-3. **Listens for API commands** - The TCP server starts on the configured port
-4. **Renders normally** - The match is fully rendered for frame capture
+1. **Skips ALL menus and prompts** - No intro screen, no "Press any key to continue",
+   no main menu (Quick Match, League, Career, Settings, etc.), no controller selection
+2. **Boots directly into a match** - Barcelona vs Real Madrid loads automatically
+3. **Auto-continues half-time** - No user input needed between halves
+4. **Listens for API commands** - The TCP server starts on the configured port
+5. **Renders normally** - The match is fully rendered for frame capture
 
-The game boots directly into a playable match with zero human input required.
-Use the `reset` command to start a new match with custom teams and settings.
+The game boots directly into a playable match with **zero human input required**.
+There is no path to any menu in API mode - the game is fully hands-off.
+
+When a match ends, the game stays at the result screen. The `step` and `observe`
+commands will report `done: true`. Use the `reset` command to start a new match.
 
 ### Python Client Example
 

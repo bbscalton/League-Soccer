@@ -314,6 +314,20 @@ void GameOverPage::Process() {
   // menu_smoke_quit_delay_ms keeps the page up longer for frame captures.
   const unsigned long quitDelay_ms = static_cast<unsigned long>(
       GetConfiguration()->GetInt("menu_smoke_quit_delay_ms", kMenuSmokeQuitDelay_ms));
+
+  // API mode: auto-continue to allow reset command to start a new match
+  // The match stays at the game over screen until the API issues a reset
+  if (!autoQuitTriggered && IsAPIMode() &&
+      EnvironmentManager::GetInstance().GetTime_ms() >= pageCreatedTime_ms + quitDelay_ms) {
+    autoQuitTriggered = true;
+    printf("[API] Match complete: %s %i - %i %s (waiting for reset command)\n",
+           match->GetTeam(0)->GetTeamData()->GetName().c_str(),
+           match->GetMatchData()->GetGoalCount(0), match->GetMatchData()->GetGoalCount(1),
+           match->GetTeam(1)->GetTeamData()->GetName().c_str());
+    // Don't quit or go to menu - stay here until API issues a reset
+    // The step/observe commands will report done=true, prompting the client to reset
+  }
+
   if (!autoQuitTriggered && MenuSmokeFullMatchEnabled() &&
       EnvironmentManager::GetInstance().GetTime_ms() >= pageCreatedTime_ms + quitDelay_ms) {
     autoQuitTriggered = true;

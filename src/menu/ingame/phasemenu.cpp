@@ -172,11 +172,16 @@ MatchPhasePage::~MatchPhasePage() {}
 void MatchPhasePage::Process() {
   Gui2Page::Process();
 
-  if (!autoAdvanceTriggered && MenuSmokeFullMatchEnabled() &&
+  // Auto-advance in API mode (hands-off operation) or smoke tests
+  if (!autoAdvanceTriggered && (IsAPIMode() || MenuSmokeFullMatchEnabled()) &&
       EnvironmentManager::GetInstance().GetTime_ms() >=
           pageCreatedTime_ms + kMenuSmokeAdvanceDelay_ms) {
     autoAdvanceTriggered = true;
-    printf("[menu-smoke] Continuing %s automatically\n", PhaseName(nextPhase));
+    if (IsAPIMode()) {
+      printf("[API] Auto-continuing to %s (no human input)\n", PhaseName(nextPhase));
+    } else {
+      printf("[menu-smoke] Continuing %s automatically\n", PhaseName(nextPhase));
+    }
     ContinueGame();
   }
 }

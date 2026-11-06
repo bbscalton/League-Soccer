@@ -40,6 +40,7 @@ std::shared_ptr<GameTask> GetGameTask();
 std::shared_ptr<MenuTask> GetMenuTask();
 
 bool IsReleaseVersion();
+bool IsAPIMode();  // Returns true when api_mode is enabled (hands-off operation)
 bool Verbose();
 bool UpdateNonImportableDB();
 

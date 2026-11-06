@@ -239,10 +239,6 @@ bool MenuTask::QuickStart() {
              10000;  // after 10 seconds, quickstart disabled
 }
 
-bool MenuTask::IsAPIMode() {
-  return GetConfiguration()->GetBool("api_mode", false);
-}
-
 void MenuTask::QuitGame() {
   EnvironmentManager::GetInstance().SignalQuit();
 }
