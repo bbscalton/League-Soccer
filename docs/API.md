@@ -18,25 +18,36 @@ The API provides:
 
 ### Starting the API Server
 
-Launch League-Soccer with API mode enabled via `football.config`:
+Launch League-Soccer with API mode enabled via a config file.
 
+**Example config file (`data/api_mode.config`):**
 ```
 "api_mode" "true"
 "api_port" "50051"
+"debug" "true"
 ```
 
 Then launch the game with the config file as the first argument:
 
 ```bash
 # Linux/macOS
-./gameplayfootball football.config
+./gameplayfootball data/api_mode.config
 
 # Windows
-gameplayfootball.exe football.config
+gameplayfootball.exe data\api_mode.config
 ```
 
 **Note:** Command-line flags like `--api-mode` are NOT supported. The game expects
-the first argument to be a config file path. Set all options in `football.config`.
+the first argument to be a config file path. Set all options in the config file.
+
+**Troubleshooting:** If the game shows the intro screen ("Press any key to continue")
+instead of loading directly into a match, check the console output for:
+```
+[MAIN] api_mode = true
+[MAIN] Starting API server on port 50051
+[API] API mode: skipping intro, loading match immediately
+```
+If you see `api_mode = false`, the config file is not being loaded correctly.
 
 ### Cold Start Behavior
 
