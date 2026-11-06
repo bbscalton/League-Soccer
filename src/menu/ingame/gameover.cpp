@@ -315,17 +315,18 @@ void GameOverPage::Process() {
   const unsigned long quitDelay_ms = static_cast<unsigned long>(
       GetConfiguration()->GetInt("menu_smoke_quit_delay_ms", kMenuSmokeQuitDelay_ms));
 
-  // API mode: auto-continue to allow reset command to start a new match
-  // The match stays at the game over screen until the API issues a reset
+  // API mode: auto-start a new match (no human input required)
+  // The automation runs repeating match cycles with no person at the keyboard.
   if (!autoQuitTriggered && IsAPIMode() &&
       EnvironmentManager::GetInstance().GetTime_ms() >= pageCreatedTime_ms + quitDelay_ms) {
     autoQuitTriggered = true;
-    printf("[API] Match complete: %s %i - %i %s (waiting for reset command)\n",
+    printf("[API] Match complete: %s %i - %i %s\n",
            match->GetTeam(0)->GetTeamData()->GetName().c_str(),
            match->GetMatchData()->GetGoalCount(0), match->GetMatchData()->GetGoalCount(1),
            match->GetTeam(1)->GetTeamData()->GetName().c_str());
-    // Don't quit or go to menu - stay here until API issues a reset
-    // The step/observe commands will report done=true, prompting the client to reset
+    printf("[API] Auto-starting new match (computer vs computer, no human input)\n");
+    GoRematch();
+    return;
   }
 
   if (!autoQuitTriggered && MenuSmokeFullMatchEnabled() &&

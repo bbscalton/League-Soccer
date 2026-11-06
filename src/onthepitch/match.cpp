@@ -1081,7 +1081,8 @@ void Match::UpdateIngameCamera() {
     cameraNearCap = 1;
     cameraFarCap = 220;
 
-    if (goalScoredTimer == 6000) {
+    // Skip replay in API mode - automation runs faster without user watching replays
+    if (goalScoredTimer == 6000 && !IsAPIMode()) {
       pause = true;
       sig_OnExtendedReplayMoment(this);
     }
