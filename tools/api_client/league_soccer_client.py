@@ -79,7 +79,11 @@ class Observation:
         obs.step = data.get("step", 0)
         obs.match_time_ms = data.get("match_time_ms", 0)
         obs.period = data.get("period", 0)
-        obs.score = data.get("score", [0, 0])
+        score_data = data.get("score", [0, 0])
+        if isinstance(score_data, list) and len(score_data) >= 2:
+            obs.score = score_data
+        else:
+            obs.score = [data.get("score_home", 0), data.get("score_away", 0)]
         obs.in_play = data.get("in_play", False)
         obs.in_set_piece = data.get("in_set_piece", False)
         obs.goal_scored = data.get("goal_scored", False)
@@ -97,9 +101,33 @@ class Observation:
         )
         
         for p in data.get("home_players", []):
-            obs.home_players.append(PlayerObs(**p))
+            obs.home_players.append(PlayerObs(
+                id=p.get("id", 0),
+                team=p.get("team", 0),
+                x=p.get("x", 0.0),
+                y=p.get("y", 0.0),
+                z=p.get("z", 0.0),
+                vx=p.get("vx", 0.0),
+                vy=p.get("vy", 0.0),
+                direction=p.get("dir", 0.0),
+                has_ball=p.get("has_ball", False),
+                active=p.get("active", False),
+                stamina=p.get("stamina", 1.0),
+            ))
         for p in data.get("away_players", []):
-            obs.away_players.append(PlayerObs(**p))
+            obs.away_players.append(PlayerObs(
+                id=p.get("id", 0),
+                team=p.get("team", 0),
+                x=p.get("x", 0.0),
+                y=p.get("y", 0.0),
+                z=p.get("z", 0.0),
+                vx=p.get("vx", 0.0),
+                vy=p.get("vy", 0.0),
+                direction=p.get("dir", 0.0),
+                has_ball=p.get("has_ball", False),
+                active=p.get("active", False),
+                stamina=p.get("stamina", 1.0),
+            ))
         
         return obs
 

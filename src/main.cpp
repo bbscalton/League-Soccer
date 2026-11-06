@@ -816,12 +816,12 @@ int main(int argc, const char** argv) {
 
       menuTask->SetTeamIDs(std::to_string(homeTeam), std::to_string(awayTeam));
 
-      // Set up controller sides - API controls both teams
+      // Set up controller sides - API gamepads control both teams
+      // This allows the API to send actions that affect the game
       std::vector<SideSelection> sides;
       for (size_t i = 0; i < controllers.size(); i++) {
         SideSelection side;
         side.controllerID = static_cast<int>(i);
-        // First two controllers (API gamepads) control home and away
         if (i == 0)
           side.side = -1;  // Home team
         else if (i == 1)
@@ -846,13 +846,19 @@ int main(int argc, const char** argv) {
       return true;
     });
 
-    // Step callback: advance simulation (match processes each frame automatically)
+    // Step callback: return current match state (the game loop ticks automatically)
     g_apiServer->SetStepCallback([](api::StepResult& result) -> bool {
-      if (!gameTask || !gameTask->GetMatch()) {
+      if (!gameTask) {
+        printf("[API] Step failed: gameTask is null\n");
         return false;
       }
 
       Match* match = gameTask->GetMatch();
+      if (!match) {
+        printf("[API] Step failed: no match active (GetMatch() returned null)\n");
+        return false;
+      }
+
       e_MatchPhase phase = match->GetMatchPhase();
       // Match is done after penalties or if we're past 2nd half (for non-extra-time matches)
       result.done = (phase == e_MatchPhase_Penalties && match->GetMatchTime_ms() > 0) ||
@@ -869,12 +875,22 @@ int main(int argc, const char** argv) {
 
     // Observe callback: get current match state
     g_apiServer->SetGetObservationCallback([](api::Observation& obs) -> bool {
-      if (!gameTask || !gameTask->GetMatch()) {
+      if (!gameTask) {
+        printf("[API] Observe failed: gameTask is null\n");
         return false;
       }
 
       Match* match = gameTask->GetMatch();
+      if (!match) {
+        printf("[API] Observe failed: no match active (GetMatch() returned null)\n");
+        return false;
+      }
+
       Ball* ball = match->GetBall();
+      if (!ball) {
+        printf("[API] Observe failed: ball is null\n");
+        return false;
+      }
 
       // Ball state
       obs.ball.position_x = ball->GetBallGeom()->GetPosition().coords[0];

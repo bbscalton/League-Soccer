@@ -98,7 +98,7 @@ MenuTask::MenuTask(float aspectRatio, float margin, TTF_Font* defaultFont,
   windowManager->SetPageFactory(pageFactory);
 
   if (IsAPIMode()) {
-    // API mode: set up default teams and go straight to match loading
+    // API mode: set up default teams with API gamepads controlling both sides
     // No intro, no menus, no user prompts - the API server handles control
     printf("[API] API mode: setting up default match (Barcelona vs Real Madrid)\n");
 
@@ -106,11 +106,12 @@ MenuTask::MenuTask(float aspectRatio, float margin, TTF_Font* defaultFont,
     for (int i = 0; i < size; i++) {
       SideSelection side;
       side.controllerID = i;
-      // API gamepads control home (0) and away (1) teams
+      // API gamepads control home (side=-1) and away (side=1) teams
+      // This allows the API to send actions that affect the game
       if (i == 0)
-        side.side = -1;  // Home team
+        side.side = -1;  // Home team controlled by first API gamepad
       else if (i == 1)
-        side.side = 1;  // Away team
+        side.side = 1;  // Away team controlled by second API gamepad
       else
         side.side = 0;  // AI
       queuedFixture->sides.push_back(side);
