@@ -602,6 +602,9 @@ int main(int argc, const char** argv) {
       int fixture_id;
       return api::CreateFixture(json, fixture_id, error);
     });
+    g_apiServer->SetImportLeagueDataCallback([](const std::string& json, std::string& error) {
+      return api::ImportLeagueData(json, error);
+    });
     g_apiServer->SetExportLeagueDataCallback([]() { return api::ExportLeagueData(); });
 
     if (g_apiServer->Start(apiPort)) {
