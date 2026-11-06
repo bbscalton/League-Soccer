@@ -18,7 +18,7 @@ TEST(ApiProtocolTest, SerializeObservation) {
   obs.in_set_piece = false;
   obs.goal_scored = false;
   obs.last_touch_team = 0;
-  
+
   obs.ball.position_x = 0.0f;
   obs.ball.position_y = 5.0f;
   obs.ball.position_z = 0.1f;
@@ -26,7 +26,7 @@ TEST(ApiProtocolTest, SerializeObservation) {
   obs.ball.velocity_y = -0.5f;
   obs.ball.velocity_z = 0.0f;
   obs.ball.owned_team = 0;
-  
+
   PlayerObservation player;
   player.player_id = 1;
   player.team_id = 0;
@@ -37,9 +37,9 @@ TEST(ApiProtocolTest, SerializeObservation) {
   player.is_active = true;
   player.stamina = 0.95f;
   obs.home_players.push_back(player);
-  
+
   std::string json = SerializeObservation(obs);
-  
+
   // Check key fields are present
   EXPECT_NE(json.find("\"type\":\"observation\""), std::string::npos);
   EXPECT_NE(json.find("\"step\":100"), std::string::npos);
@@ -55,12 +55,12 @@ TEST(ApiProtocolTest, SerializeStepResult) {
   result.observation.step = 50;
   result.observation.match_time_ms = 500;
   result.done = false;
-  
+
   std::string json = SerializeStepResult(result);
-  
+
   EXPECT_NE(json.find("\"type\":\"step_result\""), std::string::npos);
   EXPECT_NE(json.find("\"done\":false"), std::string::npos);
-  
+
   result.done = true;
   json = SerializeStepResult(result);
   EXPECT_NE(json.find("\"done\":true"), std::string::npos);
@@ -68,7 +68,7 @@ TEST(ApiProtocolTest, SerializeStepResult) {
 
 TEST(ApiProtocolTest, SerializeError) {
   std::string json = SerializeError("Something went wrong", 42);
-  
+
   EXPECT_NE(json.find("\"type\":\"error\""), std::string::npos);
   EXPECT_NE(json.find("\"code\":42"), std::string::npos);
   EXPECT_NE(json.find("\"message\":\"Something went wrong\""), std::string::npos);
@@ -76,7 +76,7 @@ TEST(ApiProtocolTest, SerializeError) {
 
 TEST(ApiProtocolTest, SerializeAck) {
   std::string json = SerializeAck("reset");
-  
+
   EXPECT_NE(json.find("\"type\":\"ack\""), std::string::npos);
   EXPECT_NE(json.find("\"request\":\"reset\""), std::string::npos);
 }
@@ -89,10 +89,10 @@ TEST(ApiProtocolTest, ParseResetParams) {
     "seed": 12345,
     "match_duration_minutes": 10.0
   })";
-  
+
   ResetParams params;
   bool success = ParseResetParams(json, params);
-  
+
   EXPECT_TRUE(success);
   EXPECT_EQ(params.home_team_id, 5);
   EXPECT_EQ(params.away_team_id, 10);
@@ -102,10 +102,10 @@ TEST(ApiProtocolTest, ParseResetParams) {
 
 TEST(ApiProtocolTest, ParseResetParamsDefaults) {
   std::string json = R"({"type": "reset"})";
-  
+
   ResetParams params;
   bool success = ParseResetParams(json, params);
-  
+
   EXPECT_TRUE(success);
   EXPECT_EQ(params.home_team_id, -1);
   EXPECT_EQ(params.away_team_id, -1);
@@ -125,10 +125,10 @@ TEST(ApiProtocolTest, ParsePlayerAction) {
     "sprint": true,
     "dribble": false
   })";
-  
+
   PlayerAction action;
   bool success = ParsePlayerAction(json, action);
-  
+
   EXPECT_TRUE(success);
   EXPECT_FLOAT_EQ(action.direction_x, 0.5f);
   EXPECT_FLOAT_EQ(action.direction_y, -0.3f);
@@ -141,10 +141,10 @@ TEST(ApiProtocolTest, ParsePlayerAction) {
 
 TEST(ApiProtocolTest, ParsePlayerActionDefaults) {
   std::string json = R"({"type": "action"})";
-  
+
   PlayerAction action;
   bool success = ParsePlayerAction(json, action);
-  
+
   EXPECT_TRUE(success);
   EXPECT_FLOAT_EQ(action.direction_x, 0.0f);
   EXPECT_FLOAT_EQ(action.direction_y, 0.0f);

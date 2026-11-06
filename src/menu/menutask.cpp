@@ -101,26 +101,29 @@ MenuTask::MenuTask(float aspectRatio, float margin, TTF_Font* defaultFont,
     // API mode: set up default teams and go straight to match loading
     // No intro, no menus, no user prompts - the API server handles control
     printf("[API] API mode: setting up default match (Barcelona vs Real Madrid)\n");
-    
+
     int size = GetControllers().size();
     for (int i = 0; i < size; i++) {
       SideSelection side;
       side.controllerID = i;
       // API gamepads control home (0) and away (1) teams
-      if (i == 0) side.side = -1;       // Home team
-      else if (i == 1) side.side = 1;   // Away team
-      else side.side = 0;               // AI
+      if (i == 0)
+        side.side = -1;  // Home team
+      else if (i == 1)
+        side.side = 1;  // Away team
+      else
+        side.side = 0;  // AI
       queuedFixture->sides.push_back(side);
     }
-    
+
     // Default teams for API mode
     queuedFixture->teamID1 = "3";  // Barcelona
     queuedFixture->teamID2 = "8";  // Real Madrid
     queuedFixture->team1KitNum = 1;
     queuedFixture->team2KitNum = 2;
-    
+
     menuAction = e_MenuAction_Menu;
-    
+
   } else if (!QuickStart()) {
     queuedFixture->team1KitNum = 1;
     queuedFixture->team2KitNum = 2;
