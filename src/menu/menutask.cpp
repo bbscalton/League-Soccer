@@ -97,7 +97,31 @@ MenuTask::MenuTask(float aspectRatio, float margin, TTF_Font* defaultFont,
   PageFactory* pageFactory = new PageFactory();
   windowManager->SetPageFactory(pageFactory);
 
-  if (!QuickStart()) {
+  if (IsAPIMode()) {
+    // API mode: set up default teams and go straight to match loading
+    // No intro, no menus, no user prompts - the API server handles control
+    printf("[API] API mode: setting up default match (Barcelona vs Real Madrid)\n");
+    
+    int size = GetControllers().size();
+    for (int i = 0; i < size; i++) {
+      SideSelection side;
+      side.controllerID = i;
+      // API gamepads control home (0) and away (1) teams
+      if (i == 0) side.side = -1;       // Home team
+      else if (i == 1) side.side = 1;   // Away team
+      else side.side = 0;               // AI
+      queuedFixture->sides.push_back(side);
+    }
+    
+    // Default teams for API mode
+    queuedFixture->teamID1 = "3";  // Barcelona
+    queuedFixture->teamID2 = "8";  // Real Madrid
+    queuedFixture->team1KitNum = 1;
+    queuedFixture->team2KitNum = 2;
+    
+    menuAction = e_MenuAction_Menu;
+    
+  } else if (!QuickStart()) {
     queuedFixture->team1KitNum = 1;
     queuedFixture->team2KitNum = 2;
 
@@ -181,6 +205,10 @@ void MenuTask::ProcessPhase() {
       CareerSave* save = CareerDatabase::GetInstance().GetActiveSave();
       const int hubPage = CareerHubPageID(save);
       windowManager->GetPageFactory()->CreatePage(hubPage, properties, 0);
+    } else if (IsAPIMode()) {
+      // API mode: skip intro/menus completely, go straight to loading the match
+      printf("[API] API mode: skipping intro, loading match immediately\n");
+      windowManager->GetPageFactory()->CreatePage((int)e_PageID_LoadingMatch, properties, 0);
     } else if (!QuickStart()) {
       if (!IsReleaseVersion()) {
         windowManager->GetPageFactory()->CreatePage((int)e_PageID_MainMenu, properties, 0);
@@ -206,6 +234,10 @@ bool MenuTask::QuickStart() {
   return !IsReleaseVersion() && GetConfiguration()->GetBool("quick_start", false) &&
          EnvironmentManager::GetInstance().GetTime_ms() <
              10000;  // after 10 seconds, quickstart disabled
+}
+
+bool MenuTask::IsAPIMode() {
+  return GetConfiguration()->GetBool("api_mode", false);
 }
 
 void MenuTask::QuitGame() {

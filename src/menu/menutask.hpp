@@ -50,6 +50,7 @@ public:
   virtual void ProcessPhase();
 
   bool QuickStart();
+  bool IsAPIMode();
   void QuitGame();
   // Quits once delay_ms has passed (smoke tests keep a page on screen long
   // enough to be drawn and captured).

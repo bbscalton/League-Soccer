@@ -110,6 +110,7 @@ static LONG WINAPI CustomCrashHandler(EXCEPTION_POINTERS* pExceptionInfo) {
 #include "hid/apigamepad.hpp"
 #include "api/api_server.hpp"
 #include "api/league_api.hpp"
+#include "data/matchdata.hpp"
 #include "main.hpp"
 #include "managers/resourcemanagerpool.hpp"
 #include "managers/scenemanager.hpp"
@@ -778,6 +779,160 @@ int main(int argc, const char** argv) {
       std::shared_ptr<MenuTask>(new MenuTask(kMenuAspectRatio, 0, defaultFont, defaultOutlineFont));
   if (controllers.size() > 1)
     ApplyMenuJoyButtons(dynamic_cast<HIDGamepad*>(controllers.at(1)));
+
+  // Set up API callbacks now that game/menu tasks exist
+  if (g_apiServer) {
+    // Reset callback: set up match data and start a match
+    g_apiServer->SetResetCallback([](const api::ResetParams& params, std::string& error) -> bool {
+      printf("[API] Reset requested: seed=%d, duration=%.1f min\n", 
+             params.seed, params.match_duration_minutes);
+      
+      // Set seed if provided
+      if (params.seed >= 0) {
+        srand(static_cast<unsigned int>(params.seed));
+        randomseed();
+        fastrandomseed();
+        printf("[API] Set deterministic seed: %d\n", params.seed);
+      }
+      
+      // Set match duration in config (match reads it from there)
+      if (params.match_duration_minutes > 0) {
+        GetConfiguration()->Set("match_duration_minutes", params.match_duration_minutes);
+      }
+      
+      // Stop any existing match
+      if (gameTask && gameTask->GetMatch()) {
+        gameTask->Action(e_GameTaskMessage_StopMatch);
+      }
+      
+      // Configure teams (use defaults if not specified)
+      int homeTeam = params.home_team_id >= 0 ? params.home_team_id : 3;  // Barcelona
+      int awayTeam = params.away_team_id >= 0 ? params.away_team_id : 8;  // Real Madrid
+      
+      menuTask->SetTeamIDs(std::to_string(homeTeam), std::to_string(awayTeam));
+      
+      // Set up controller sides - API controls both teams
+      std::vector<SideSelection> sides;
+      for (size_t i = 0; i < controllers.size(); i++) {
+        SideSelection side;
+        side.controllerID = static_cast<int>(i);
+        // First two controllers (API gamepads) control home and away
+        if (i == 0) side.side = -1;  // Home team
+        else if (i == 1) side.side = 1;  // Away team
+        else side.side = 0;  // AI
+        sides.push_back(side);
+      }
+      menuTask->SetControllerSetup(sides);
+      
+      // Create MatchData
+      MatchData* matchData = new MatchData(homeTeam, awayTeam);
+      menuTask->SetMatchData(matchData);
+      
+      // Start the match
+      gameTask->Action(e_GameTaskMessage_StopMenuScene);
+      gameTask->Action(e_GameTaskMessage_StartMatch);
+      
+      printf("[API] Match started: %s vs %s\n",
+             matchData->GetTeamData(0)->GetName().c_str(),
+             matchData->GetTeamData(1)->GetName().c_str());
+      
+      return true;
+    });
+    
+    // Step callback: advance simulation (match processes each frame automatically)
+    g_apiServer->SetStepCallback([](api::StepResult& result) -> bool {
+      if (!gameTask || !gameTask->GetMatch()) {
+        return false;
+      }
+      
+      Match* match = gameTask->GetMatch();
+      e_MatchPhase phase = match->GetMatchPhase();
+      // Match is done after penalties or if we're past 2nd half (for non-extra-time matches)
+      result.done = (phase == e_MatchPhase_Penalties && match->GetMatchTime_ms() > 0) ||
+                    (phase > e_MatchPhase_2ndHalf && phase != e_MatchPhase_1stExtraTime && 
+                     phase != e_MatchPhase_2ndExtraTime);
+      result.observation.score_home = match->GetScore(0);
+      result.observation.score_away = match->GetScore(1);
+      result.observation.match_time_ms = match->GetMatchTime_ms();
+      result.observation.in_play = match->IsInPlay();
+      result.observation.period = static_cast<int>(phase);
+      
+      return true;
+    });
+    
+    // Observe callback: get current match state
+    g_apiServer->SetGetObservationCallback([](api::Observation& obs) -> bool {
+      if (!gameTask || !gameTask->GetMatch()) {
+        return false;
+      }
+      
+      Match* match = gameTask->GetMatch();
+      Ball* ball = match->GetBall();
+      
+      // Ball state
+      obs.ball.position_x = ball->GetBallGeom()->GetPosition().coords[0];
+      obs.ball.position_y = ball->GetBallGeom()->GetPosition().coords[1];
+      obs.ball.position_z = ball->GetBallGeom()->GetPosition().coords[2];
+      obs.ball.velocity_x = ball->GetMovement().coords[0];
+      obs.ball.velocity_y = ball->GetMovement().coords[1];
+      obs.ball.velocity_z = ball->GetMovement().coords[2];
+      obs.ball.owned_team = match->GetLastTouchTeamID();
+      
+      // Game state
+      obs.score_home = match->GetScore(0);
+      obs.score_away = match->GetScore(1);
+      obs.match_time_ms = match->GetMatchTime_ms();
+      obs.in_play = match->IsInPlay();
+      obs.in_set_piece = match->IsInSetPiece();
+      obs.goal_scored = match->IsGoalScored();
+      obs.last_touch_team = match->GetLastTouchTeamID();
+      obs.period = static_cast<int>(match->GetMatchPhase());
+      
+      // Player observations for home team
+      std::vector<Player*> homePlayers;
+      match->GetActiveTeamPlayers(0, homePlayers);
+      for (Player* player : homePlayers) {
+        api::PlayerObservation pobs;
+        pobs.team_id = 0;
+        pobs.player_id = player->GetID();
+        Vector3 pos = player->GetPosition();
+        pobs.position_x = pos.coords[0];
+        pobs.position_y = pos.coords[1];
+        Vector3 dir = player->GetDirectionVec();
+        pobs.direction = atan2(dir.coords[1], dir.coords[0]);
+        pobs.has_ball = (player == match->GetDesignatedPossessionPlayer());
+        pobs.is_active = player->IsActive();
+        obs.home_players.push_back(pobs);
+      }
+      
+      // Player observations for away team
+      std::vector<Player*> awayPlayers;
+      match->GetActiveTeamPlayers(1, awayPlayers);
+      for (Player* player : awayPlayers) {
+        api::PlayerObservation pobs;
+        pobs.team_id = 1;
+        pobs.player_id = player->GetID();
+        Vector3 pos = player->GetPosition();
+        pobs.position_x = pos.coords[0];
+        pobs.position_y = pos.coords[1];
+        Vector3 dir = player->GetDirectionVec();
+        pobs.direction = atan2(dir.coords[1], dir.coords[0]);
+        pobs.has_ball = (player == match->GetDesignatedPossessionPlayer());
+        pobs.is_active = player->IsActive();
+        obs.away_players.push_back(pobs);
+      }
+      
+      return true;
+    });
+    
+    // Quit callback
+    g_apiServer->SetQuitCallback([]() {
+      printf("[API] Quit requested\n");
+      EnvironmentManager::GetInstance().SignalQuit();
+    });
+    
+    printf("[API] Match control callbacks registered\n");
+  }
 
   // Smoke tests: plug in an SDL virtual gamepad so gamepad menus and hot-plug
   // handling run against a real HIDGamepad without hardware. It arrives

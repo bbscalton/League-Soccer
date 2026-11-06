@@ -18,22 +18,38 @@ The API provides:
 
 ### Starting the API Server
 
-Launch League-Soccer with API mode enabled:
-
-```bash
-# Linux/macOS
-./gameplayfootball --api-mode --api-port 50051
-
-# Windows
-gameplayfootball.exe --api-mode --api-port 50051
-```
-
-Or set in `football.config`:
+Launch League-Soccer with API mode enabled via `football.config`:
 
 ```
 "api_mode" "true"
 "api_port" "50051"
 ```
+
+Then launch the game with the config file as the first argument:
+
+```bash
+# Linux/macOS
+./gameplayfootball football.config
+
+# Windows
+gameplayfootball.exe football.config
+```
+
+**Note:** Command-line flags like `--api-mode` are NOT supported. The game expects
+the first argument to be a config file path. Set all options in `football.config`.
+
+### Cold Start Behavior
+
+When `api_mode` is enabled, the game:
+
+1. **Skips all user prompts** - No intro screen, no "Press any key to continue",
+   no main menu, no controller selection
+2. **Starts a default match immediately** - Barcelona vs Real Madrid loads automatically
+3. **Listens for API commands** - The TCP server starts on the configured port
+4. **Renders normally** - The match is fully rendered for frame capture
+
+The game boots directly into a playable match with zero human input required.
+Use the `reset` command to start a new match with custom teams and settings.
 
 ### Python Client Example
 
@@ -101,12 +117,18 @@ Start or restart a match with optional parameters.
 ```
 
 **Parameters:**
-- `home_team_id`: Home team database ID (-1 for default)
-- `away_team_id`: Away team database ID (-1 for default)
+- `home_team_id`: Home team database ID (-1 for default: Barcelona = 3)
+- `away_team_id`: Away team database ID (-1 for default: Real Madrid = 8)
 - `seed`: RNG seed for deterministic replay (-1 for random)
 - `match_duration_minutes`: Match duration (default 5.0)
 
 **Response:** Initial observation (see below)
+
+**Cold Start Note:** In API mode, the game automatically loads a default match
+(Barcelona vs Real Madrid) on startup. The `reset` command stops any running
+match and starts a new one with the specified parameters. You can call `observe`
+immediately after the game starts to get the initial match state, or call `reset`
+to configure a custom match.
 
 #### step
 
