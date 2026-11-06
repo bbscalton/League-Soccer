@@ -575,8 +575,14 @@ int main(int argc, const char** argv) {
   int timeStep_ms = config->GetInt("physics_frametime_ms", 10);
 
   // Initialize API server if enabled
-  if (config->GetBool("api_mode", false)) {
+  bool apiModeEnabled = config->GetBool("api_mode", false);
+  printf("[MAIN] api_mode = %s\n", apiModeEnabled ? "true" : "false");
+  fflush(stdout);
+
+  if (apiModeEnabled) {
     int apiPort = config->GetInt("api_port", api::kDefaultPort);
+    printf("[MAIN] Starting API server on port %d\n", apiPort);
+    fflush(stdout);
     g_apiServer = std::make_unique<api::APIServer>();
 
     // Set up league data callbacks

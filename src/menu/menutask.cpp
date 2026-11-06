@@ -193,6 +193,11 @@ void MenuTask::ProcessPhase() {
   HandleRemovedControllers();
   Gui2Task::ProcessPhase();
 
+  if (menuAction != e_MenuAction_None) {
+    printf("[MENU] ProcessPhase: menuAction=%d, IsAPIMode=%d\n", static_cast<int>(menuAction),
+           IsAPIMode() ? 1 : 0);
+  }
+
   if (menuAction == e_MenuAction_Menu) {
     windowManager->GetPagePath()->Clear();
 
@@ -212,7 +217,11 @@ void MenuTask::ProcessPhase() {
     } else if (IsAPIMode()) {
       // API mode: skip intro/menus completely, go straight to loading the match
       printf("[API] API mode: skipping intro, loading match immediately\n");
+      printf("[API] Creating LoadingMatch page...\n");
+      fflush(stdout);
       windowManager->GetPageFactory()->CreatePage((int)e_PageID_LoadingMatch, properties, 0);
+      printf("[API] LoadingMatch page created\n");
+      fflush(stdout);
     } else if (!QuickStart()) {
       if (!IsReleaseVersion()) {
         windowManager->GetPageFactory()->CreatePage((int)e_PageID_MainMenu, properties, 0);
@@ -224,9 +233,13 @@ void MenuTask::ProcessPhase() {
     }
 
   } else if (menuAction == e_MenuAction_Game) {
+    printf("[MENU] menuAction == e_MenuAction_Game: starting match\n");
+    fflush(stdout);
     menuBackground->Hide();
     GetGameTask()->Action(e_GameTaskMessage_StopMenuScene);
     GetGameTask()->Action(e_GameTaskMessage_StartMatch);
+    printf("[MENU] Match started\n");
+    fflush(stdout);
   }
 
   menuAction = e_MenuAction_None;
