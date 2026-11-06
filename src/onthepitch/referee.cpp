@@ -256,7 +256,9 @@ void Referee::Process() {
         PrepareSetPiece(buffer.desiredSetPiece);
       }
 
-      if (buffer.startTime == match->GetActualTime_ms()) {
+      // Wait for both the scheduled start time AND GPU warmup to complete.
+      // This ensures textures are uploaded and shaders compiled before gameplay.
+      if (buffer.startTime <= match->GetActualTime_ms() && match->IsWarmedUp()) {
         // blow whistle and wait for set piece taker to touch the ball
         Vector3 refPos(0, 0, 1.7f);
         if (match->GetOfficials() && match->GetOfficials()->GetReferee()) {

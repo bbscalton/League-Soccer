@@ -1458,6 +1458,16 @@ void Match::Put() {
   if (GetIterations() < 2)
     return;  // no processes done yet (todo: this is not the correct way to measure that :p)
 
+  // Track warmup frames for GPU texture/shader warmup.
+  // During PreMatch, count rendered frames so the referee knows when to start.
+  if (matchPhase == e_MatchPhase_PreMatch && warmupFramesRendered < kWarmupFramesRequired) {
+    warmupFramesRendered++;
+    if (warmupFramesRendered == kWarmupFramesRequired) {
+      Log(e_Notice, "Match", "Put",
+          "GPU warmup complete after " + int_to_str(kWarmupFramesRequired) + " frames");
+    }
+  }
+
   // fun!
   // sunNode->SetPosition(Vector3(sin(buf_actualTime_ms * 0.001) * 3000, cos(buf_actualTime_ms *
   // 0.001) * 3000, 1000.0));
