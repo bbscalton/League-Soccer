@@ -5,7 +5,7 @@
 
 #include <algorithm>
 
-inline constexpr float kMinimumMatchDurationMinutes = 5.0f;
+inline constexpr float kMinimumMatchDurationMinutes = 3.0f;
 inline constexpr float kMaximumMatchDurationMinutes = 90.0f;
 inline constexpr float kDefaultMatchDurationMinutes = 25.0f;
 inline constexpr int kMatchDurationSliderSteps = 18;  // 5, 10, ... 90 minutes

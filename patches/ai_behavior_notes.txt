@@ -1,0 +1,106 @@
+League-Soccer AI Behavior & Control Parameters
+=============================================
+READ-ONLY investigation - no changes made
+Date: Nov 6, 2026
+
+== DIFFICULTY ==
+Source: src/onthepitch/match.cpp:59
+  matchDifficulty = GetConfiguration()->GetReal("match_difficulty", _default_Difficulty);
+
+Config file: football.config
+Range: 0.0 to 1.0 (clamped in src/utils/difficulty.hpp)
+Default: _default_Difficulty (from gamedefines.hpp, typically 0.5)
+User setting: 1.0 (maximum) - PRESERVE THIS
+
+== TEAM TACTICS (per-team, stored in database) ==
+Source: src/data/teamdata.cpp:297-382
+
+Position/Formation tactics (loaded from team's tactics_xml):
+  - position_offense_depth_factor     [0-1] "attacking: team depth"
+  - position_defense_depth_factor     [0-1] "defending: team depth"  
+  - position_offense_width_factor     [0-1] "attacking: team width"
+  - position_defense_width_factor     [0-1] "defending: team width"
+  - position_offense_midfieldfocus    [0-1] "attacking: midfield joins attack"
+  - position_defense_midfieldfocus    [0-1] "defending: midfield stays high up"
+  - position_offense_sidefocus_strength [0-1] "attacking: forward drive"
+  - position_defense_sidefocus_strength [0-1] "defending: backward drive"
+  - position_offense_microfocus_strength [0-1] "attacking: compactness around ball"
+  - position_defense_microfocus_strength [0-1] "defending: compactness around ball"
+  - dribble_offensiveness             [0-1] "CPU player on the ball: offensiveness"
+  - dribble_centermagnet              [0-1] "CPU player on the ball: prefer center"
+
+Classic team strategy (injected defaults if missing):
+  - counter_attack   [0-1, default 0.5] "Attack: Counter attack"
+  - support_distance [0-1, default 0.5] "Attack: Support distance"
+  - team_pressure    [0-1, default 0.5] "Defense: Zone pressure"
+
+WHERE STORED: SQLite database, teams table, tactics_xml column (XML format)
+UI: LeagueTeamTacticsPage (src/menu/league/league_team.cpp:560)
+SAVE: GetDB()->Query("UPDATE teams SET tactics_xml = '...'")
+
+== AI BEHAVIOR TUNING (hardcoded with difficulty scaling) ==
+Source: src/onthepitch/aitactics.hpp
+
+  GetAttackingRunThreshold(counterAttack)   - 0.62 - CA*0.24 (when to make runs)
+  GetAttackingRunDuration_ms(counterAttack) - 2800 + CA*2200ms (how long runs last)
+  ShouldStartZonePressure(pressure, territory, distance) - whether to press
+  GetZonePressureDuration_ms(pressure)      - 700 + pressure*1600ms
+  GetDribbleForwardDrive(dribble, role)     - 0.55 + dribble*0.28 + role*0.12
+  GetSupportWebScale(supportDistance)       - 0.68 + support*0.20
+  GetDefenderSupportScale(roleMindset)      - 0.72 + role*0.52 (capped at 1.0)
+
+Source: src/onthepitch/gameplaytuning.hpp
+
+  GetFirstTouchContextPenalty() - pressure/fatigue penalty on first touch
+  GetFatigueWorkloadFactor()    - sprint is 0.36 more taxing than jogging
+
+== NO DEDICATED AGGRESSION/FOUL/TACKLE SLIDERS ==
+The game does NOT have:
+  - Explicit "aggression" slider
+  - Explicit "tackling intensity" slider  
+  - Explicit "foul frequency" slider
+  - Explicit "running intensity" slider
+
+Tackling/fouls emerge from:
+  - team_pressure (higher = more pressing = more tackles)
+  - match_difficulty (harder AI = better timing = fewer fouls)
+  - Player attributes (individual player stats in database)
+
+== EXTERNALLY ACCESSIBLE ACTION BUTTONS ==
+Source: src/api/api_protocol.hpp:17-28, src/hid/ihidevice.hpp:13-33
+
+API PlayerAction struct (JSON over TCP):
+  - direction_x, direction_y  [-1 to 1] - movement stick
+  - short_pass    (A button / e_ButtonFunction_ShortPass)
+  - high_pass     (B button / e_ButtonFunction_HighPass)
+  - long_pass     (Y button / e_ButtonFunction_LongPass)
+  - shot          (X button / e_ButtonFunction_Shot)
+  - sprint        (RB / e_ButtonFunction_Sprint)
+  - dribble       (RT / e_ButtonFunction_Dribble)
+  - switch_player (LB / e_ButtonFunction_Switch)
+  - special       (RS / e_ButtonFunction_Special)
+
+Additional game buttons (not in API yet):
+  - e_ButtonFunction_KeeperRush  - call keeper out
+  - e_ButtonFunction_Sliding     - slide tackle
+  - e_ButtonFunction_Pressure    - press ball carrier
+  - e_ButtonFunction_TeamPressure - team press
+
+== SUMMARY ==
+
+Configurable via config file:
+  - match_difficulty [0-1] - global CPU skill level
+
+Configurable via database (per team):
+  - 15+ tactical sliders affecting positioning, pressing, attack style
+
+Hardcoded AI behaviors (not configurable without code changes):
+  - Run timing thresholds
+  - Pressure/tackle decisions
+  - Fatigue model
+  - Foul probability (implicit from pressure + timing)
+
+To increase aggression/tackling without code changes:
+  - Raise team_pressure to 1.0 for more zone pressing
+  - Raise position_defense_microfocus_strength for tighter marking
+  - These create more challenge situations but don't add explicit "tackle harder" mode

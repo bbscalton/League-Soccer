@@ -154,6 +154,7 @@ public:
   Officials* GetOfficials() { return officials.get(); }
   const RefereeBuffer& GetRefereeBuffer() { return referee->GetBuffer(); };
 
+  bool IsGameOver() const { return gameOver; }
   void SetGoalScored(bool onOff) {
     if (onOff == false)
       ballIsInGoal = false;

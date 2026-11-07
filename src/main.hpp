@@ -41,6 +41,7 @@ std::shared_ptr<MenuTask> GetMenuTask();
 
 bool IsReleaseVersion();
 bool IsAPIMode();  // Returns true when api_mode is enabled (hands-off operation)
+bool HasAPIClients();  // Returns true when API clients are connected (disables auto-rematch)
 bool Verbose();
 bool UpdateNonImportableDB();
 

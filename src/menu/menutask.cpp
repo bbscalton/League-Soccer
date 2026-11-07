@@ -98,22 +98,32 @@ MenuTask::MenuTask(float aspectRatio, float margin, TTF_Font* defaultFont,
   windowManager->SetPageFactory(pageFactory);
 
   if (IsAPIMode()) {
-    // API mode: set up default teams with API gamepads controlling both sides
-    // No intro, no menus, no user prompts - the API server handles control
-    printf("[API] API mode: setting up default match (Barcelona vs Real Madrid)\n");
+    // API mode: CPU vs CPU by default (api_direct_player_control=false).
+    // When api_direct_player_control=true, API gamepads control home/away teams
+    // and the 'action' command drives player input directly.
+    bool directControl = GetConfiguration()->GetBool("api_direct_player_control", false);
+    if (directControl) {
+      printf("[API] API mode with DIRECT player control (api_direct_player_control=true)\n");
+    } else {
+      printf("[API] API mode: CPU vs CPU autoplay (api_direct_player_control=false)\n");
+    }
 
     int size = GetControllers().size();
     for (int i = 0; i < size; i++) {
       SideSelection side;
       side.controllerID = i;
-      // API gamepads control home (side=-1) and away (side=1) teams
-      // This allows the API to send actions that affect the game
-      if (i == 0)
-        side.side = -1;  // Home team controlled by first API gamepad
-      else if (i == 1)
-        side.side = 1;  // Away team controlled by second API gamepad
-      else
-        side.side = 0;  // AI
+      if (directControl) {
+        // Direct control: API gamepads control home (side=-1) and away (side=1)
+        if (i == 0)
+          side.side = -1;  // Home team controlled by first API gamepad
+        else if (i == 1)
+          side.side = 1;   // Away team controlled by second API gamepad
+        else
+          side.side = 0;   // AI for any extra controllers
+      } else {
+        // CPU autoplay: both teams controlled by AI (side=0)
+        side.side = 0;
+      }
       queuedFixture->sides.push_back(side);
     }
 

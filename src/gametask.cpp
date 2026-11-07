@@ -1,6 +1,8 @@
 #include "gametask.hpp"
 
+#include "base/math/bluntmath.hpp"
 #include "blunted.hpp"
+#include "data/matchdata.hpp"
 #include "framework/scheduler.hpp"
 #include "main.hpp"
 #include "managers/resourcemanagerpool.hpp"
@@ -118,6 +120,11 @@ void GameTask::GetPhase() {
 }
 
 void GameTask::ProcessPhase() {
+  // Check for pending requests - execute on main thread for safety
+  ProcessPendingReset();
+  ProcessPendingQuit();
+  ProcessPendingRematch();
+
   for (unsigned int i = 0; i < GetControllers().size(); i++) {
     GetControllers().at(i)->Process();
   }
@@ -132,6 +139,223 @@ void GameTask::ProcessPhase() {
 
   if (menuScene) {
     menuScene->Process();
+  }
+}
+
+bool GameTask::RequestReset(int seed, int home_team_id, int away_team_id,
+                            float match_duration_minutes, std::string& error) {
+  // Queue the reset request for main thread execution
+  {
+    std::lock_guard<std::mutex> lock(pendingResetMutex);
+    if (pendingReset.pending) {
+      error = "Another reset is already pending";
+      return false;
+    }
+    pendingReset.pending = true;
+    pendingReset.seed = seed;
+    pendingReset.home_team_id = home_team_id;
+    pendingReset.away_team_id = away_team_id;
+    pendingReset.match_duration_minutes = match_duration_minutes;
+    pendingReset.completed = false;
+    pendingReset.success = false;
+    pendingReset.error.clear();
+  }
+
+  // Wait for completion (main thread will process and signal)
+  {
+    std::unique_lock<std::mutex> lock(pendingReset.completionMutex);
+    // Wait up to 10 seconds for the reset to complete
+    bool completed = pendingReset.completionCV.wait_for(
+        lock, std::chrono::seconds(10),
+        [this] { return pendingReset.completed; });
+
+    if (!completed) {
+      std::lock_guard<std::mutex> resetLock(pendingResetMutex);
+      pendingReset.pending = false;
+      error = "Reset timed out waiting for main thread";
+      return false;
+    }
+
+    error = pendingReset.error;
+    return pendingReset.success;
+  }
+}
+
+void GameTask::ProcessPendingReset() {
+  std::lock_guard<std::mutex> lock(pendingResetMutex);
+  if (!pendingReset.pending) {
+    return;
+  }
+
+  printf("[API] Processing pending reset on main thread: seed=%d, home=%d, away=%d\n",
+         pendingReset.seed, pendingReset.home_team_id, pendingReset.away_team_id);
+
+  bool success = true;
+  std::string error;
+
+  // Set seed if provided
+  if (pendingReset.seed >= 0) {
+    srand(static_cast<unsigned int>(pendingReset.seed));
+    randomseed();
+    fastrandomseed();
+    printf("[API] Set deterministic seed: %d\n", pendingReset.seed);
+  }
+
+  // Set match duration in config
+  if (pendingReset.match_duration_minutes > 0) {
+    GetConfiguration()->Set("match_duration_minutes", pendingReset.match_duration_minutes);
+    printf("[API] Set match duration: %.1f minutes\n", pendingReset.match_duration_minutes);
+  }
+
+  // Stop existing match
+  if (match) {
+    printf("[API] Stopping existing match\n");
+    Action(e_GameTaskMessage_StopMatch);
+  }
+
+  // Configure teams
+  int homeTeam = pendingReset.home_team_id >= 0 ? pendingReset.home_team_id : 3;
+  int awayTeam = pendingReset.away_team_id >= 0 ? pendingReset.away_team_id : 8;
+
+  printf("[API] Setting up teams: home=%d, away=%d\n", homeTeam, awayTeam);
+  GetMenuTask()->SetTeamIDs(std::to_string(homeTeam), std::to_string(awayTeam));
+
+  // Set up controller sides
+  bool directControl = GetConfiguration()->GetBool("api_direct_player_control", false);
+  std::vector<SideSelection> sides;
+  for (size_t i = 0; i < GetControllers().size(); i++) {
+    SideSelection side;
+    side.controllerID = static_cast<int>(i);
+    if (directControl) {
+      if (i == 0)
+        side.side = -1;
+      else if (i == 1)
+        side.side = 1;
+      else
+        side.side = 0;
+    } else {
+      side.side = 0;
+    }
+    sides.push_back(side);
+  }
+  GetMenuTask()->SetControllerSetup(sides);
+  printf("[API] Controller setup: %zu controllers, direct_control=%s\n",
+         sides.size(), directControl ? "true" : "false");
+
+  // Create MatchData
+  MatchData* matchData = new MatchData(homeTeam, awayTeam);
+  if (!matchData) {
+    error = "Failed to create match data";
+    printf("[API] Reset failed: could not create MatchData\n");
+    success = false;
+  } else {
+    GetMenuTask()->SetMatchData(matchData);
+
+    // Start the match
+    printf("[API] Starting match...\n");
+    Action(e_GameTaskMessage_StopMenuScene);
+    Action(e_GameTaskMessage_StartMatch);
+
+    // Verify match was created
+    if (!match) {
+      error = "Match failed to start";
+      printf("[API] Reset failed: GetMatch() returned null after StartMatch\n");
+      success = false;
+    } else {
+      printf("[API] Match started successfully: %s vs %s\n",
+             matchData->GetTeamData(0)->GetName().c_str(),
+             matchData->GetTeamData(1)->GetName().c_str());
+    }
+  }
+
+  // Signal completion
+  {
+    std::lock_guard<std::mutex> completionLock(pendingReset.completionMutex);
+    pendingReset.success = success;
+    pendingReset.error = error;
+    pendingReset.completed = true;
+    pendingReset.pending = false;
+  }
+  pendingReset.completionCV.notify_all();
+}
+
+void GameTask::RequestQuit() {
+  // Queue quit for main thread execution - safe during loading/gameplay.
+  printf("[API] Quit queued for main thread execution\n");
+  pendingQuit.pending.store(true);
+}
+
+void GameTask::ProcessPendingQuit() {
+  if (!pendingQuit.pending.load()) {
+    return;
+  }
+  
+  printf("[API] Processing pending quit on main thread\n");
+  pendingQuit.pending.store(false);
+  EnvironmentManager::GetInstance().SignalQuit();
+}
+
+void GameTask::RequestRematch(int home_team_id, int away_team_id) {
+  std::lock_guard<std::mutex> lock(pendingRematchMutex);
+  printf("[API] Rematch queued for main thread: home=%d, away=%d\n", home_team_id, away_team_id);
+  pendingRematch.home_team_id = home_team_id;
+  pendingRematch.away_team_id = away_team_id;
+  pendingRematch.pending.store(true);
+}
+
+void GameTask::ProcessPendingRematch() {
+  if (!pendingRematch.pending.load()) {
+    return;
+  }
+
+  std::lock_guard<std::mutex> lock(pendingRematchMutex);
+  if (!pendingRematch.pending.load()) {
+    return;  // Double-check after lock
+  }
+
+  printf("[API] Processing pending rematch on main thread: home=%d, away=%d\n",
+         pendingRematch.home_team_id, pendingRematch.away_team_id);
+  pendingRematch.pending.store(false);
+
+  int homeTeam = pendingRematch.home_team_id;
+  int awayTeam = pendingRematch.away_team_id;
+
+  // Stop existing match
+  if (match) {
+    printf("[API] Stopping existing match for rematch\n");
+    Action(e_GameTaskMessage_StopMatch);
+  }
+
+  // Stop menu scene (cleans up GUI resources safely)
+  Action(e_GameTaskMessage_StopMenuScene);
+
+  // Configure teams
+  GetMenuTask()->SetTeamIDs(std::to_string(homeTeam), std::to_string(awayTeam));
+
+  // Set up controller sides for CPU vs CPU
+  std::vector<SideSelection> sides;
+  for (size_t i = 0; i < GetControllers().size(); i++) {
+    SideSelection side;
+    side.controllerID = static_cast<int>(i);
+    side.side = 0;  // CPU control
+    sides.push_back(side);
+  }
+  GetMenuTask()->SetControllerSetup(sides);
+
+  // Create fresh MatchData
+  MatchData* matchData = new MatchData(homeTeam, awayTeam);
+  GetMenuTask()->SetMatchData(matchData);
+
+  // Start the new match
+  printf("[API] Starting rematch...\n");
+  Action(e_GameTaskMessage_StartMatch);
+
+  if (match) {
+    printf("[API] Rematch started successfully: %s vs %s\n",
+           matchData->GetTeamData(0)->GetName().c_str(),
+           matchData->GetTeamData(1)->GetName().c_str());
+  } else {
+    printf("[API] Rematch failed: match is null after StartMatch\n");
   }
 }
 

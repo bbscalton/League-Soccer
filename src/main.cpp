@@ -278,6 +278,12 @@ bool IsAPIMode() {
   return GetConfiguration()->GetBool("api_mode", false);
 }
 
+bool HasAPIClients() {
+  // When an external API client is connected, it controls match cycling.
+  // The game should NOT auto-rematch; wait for client reset commands instead.
+  return g_apiServer && g_apiServer->HasConnectedClients();
+}
+
 bool Verbose() {
   return !IsReleaseVersion();
 }
@@ -822,77 +828,13 @@ int main(int argc, const char** argv) {
         return false;
       }
 
-      // Set seed if provided (must be done before match creation)
-      if (params.seed >= 0) {
-        srand(static_cast<unsigned int>(params.seed));
-        randomseed();
-        fastrandomseed();
-        printf("[API] Set deterministic seed: %d\n", params.seed);
-      }
-
-      // Set match duration in config (match reads it from there)
-      if (params.match_duration_minutes > 0) {
-        GetConfiguration()->Set("match_duration_minutes", params.match_duration_minutes);
-        printf("[API] Set match duration: %.1f minutes\n", params.match_duration_minutes);
-      }
-
-      // Stop any existing match
-      if (gameTask->GetMatch()) {
-        printf("[API] Stopping existing match\n");
-        gameTask->Action(e_GameTaskMessage_StopMatch);
-      }
-
-      // Configure teams (use defaults if not specified)
-      int homeTeam = params.home_team_id >= 0 ? params.home_team_id : 3;  // Barcelona
-      int awayTeam = params.away_team_id >= 0 ? params.away_team_id : 8;  // Real Madrid
-
-      printf("[API] Setting up teams: home=%d, away=%d\n", homeTeam, awayTeam);
-      menuTask->SetTeamIDs(std::to_string(homeTeam), std::to_string(awayTeam));
-
-      // Set up controller sides - API gamepads control both teams
-      // This allows the API to send actions that affect the game
-      std::vector<SideSelection> sides;
-      for (size_t i = 0; i < controllers.size(); i++) {
-        SideSelection side;
-        side.controllerID = static_cast<int>(i);
-        if (i == 0)
-          side.side = -1;  // Home team
-        else if (i == 1)
-          side.side = 1;  // Away team
-        else
-          side.side = 0;  // AI
-        sides.push_back(side);
-      }
-      menuTask->SetControllerSetup(sides);
-      printf("[API] Controller setup: %zu controllers configured\n", sides.size());
-
-      // Create MatchData
-      MatchData* matchData = new MatchData(homeTeam, awayTeam);
-      if (!matchData) {
-        error = "Failed to create match data";
-        printf("[API] Reset failed: could not create MatchData\n");
-        return false;
-      }
-      menuTask->SetMatchData(matchData);
-
-      // Stop menu scene and start the match
-      printf("[API] Starting match...\n");
-      gameTask->Action(e_GameTaskMessage_StopMenuScene);
-      gameTask->Action(e_GameTaskMessage_StartMatch);
-
-      // Verify match was created
-      Match* match = gameTask->GetMatch();
-      if (!match) {
-        error = "Match failed to start";
-        printf("[API] Reset failed: GetMatch() returned null after StartMatch\n");
-        return false;
-      }
-
-      printf("[API] Match started successfully: %s vs %s\n",
-             matchData->GetTeamData(0)->GetName().c_str(),
-             matchData->GetTeamData(1)->GetName().c_str());
-
-      return true;
+      // Queue reset request for main thread execution to avoid race conditions.
+      // The API callback runs on a network thread; destroying/creating match
+      // resources here would race with render/physics threads accessing them.
+      // RequestReset queues the work and blocks until the main thread completes it.
+      printf("[API] Queueing reset for main thread execution...\n");
+      return gameTask->RequestReset(params.seed, params.home_team_id, params.away_team_id,
+                                    params.match_duration_minutes, error);
     });
 
     // Step callback: return current match state (the game loop ticks automatically)
@@ -909,10 +851,9 @@ int main(int argc, const char** argv) {
       }
 
       e_MatchPhase phase = match->GetMatchPhase();
-      // Match is done after penalties or if we're past 2nd half (for non-extra-time matches)
-      result.done = (phase == e_MatchPhase_Penalties && match->GetMatchTime_ms() > 0) ||
-                    (phase > e_MatchPhase_2ndHalf && phase != e_MatchPhase_1stExtraTime &&
-                     phase != e_MatchPhase_2ndExtraTime);
+      // Match is done when GameOver() has been called by the referee.
+      // This handles all end conditions: regulation win/draw, extra time, penalties.
+      result.done = match->IsGameOver();
       result.observation.score_home = match->GetScore(0);
       result.observation.score_away = match->GetScore(1);
       result.observation.match_time_ms = match->GetMatchTime_ms();
@@ -997,10 +938,15 @@ int main(int argc, const char** argv) {
       return true;
     });
 
-    // Quit callback
+    // Quit callback - schedule on main thread for safe teardown during loading
     g_apiServer->SetQuitCallback([]() {
       printf("[API] Quit requested\n");
-      EnvironmentManager::GetInstance().SignalQuit();
+      if (gameTask) {
+        gameTask->RequestQuit();
+      } else {
+        // No game task yet - direct quit is safe
+        EnvironmentManager::GetInstance().SignalQuit();
+      }
     });
 
     printf("[API] Match control callbacks registered\n");

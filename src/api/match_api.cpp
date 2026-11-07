@@ -82,8 +82,11 @@ bool MatchAPIController::Step(StepResult& result) {
   // Populate observation
   PopulateObservation(result.observation);
 
-  // Check if match is done
-  result.done = false;  // Would check match->GetMatchPhase()
+  // Check if match is done.
+  // Note: This MatchAPIController is not currently used by the main game;
+  // the step/observe callbacks in main.cpp access the live Match directly.
+  // This placeholder returns false; actual done detection is in main.cpp.
+  result.done = false;
 
   return true;
 }

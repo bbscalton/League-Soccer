@@ -747,6 +747,15 @@ void Humanoid::Process() {
       }
 
       else if (currentAnim->functionType == e_FunctionType_Deflect) {
+        // Record save: keeper deflecting a ball that was heading toward goal.
+        // Simple heuristic: if ball was moving toward keeper's goal and keeper touches it.
+        Vector3 ballMovement = match->GetBall()->GetMovement();
+        float goalX = pitchHalfW * team->GetSide();  // Keeper's own goal
+        bool ballTowardGoal = (ballMovement.coords[0] * team->GetSide() > 5.0f);  // Moving toward goal at decent speed
+        if (ballTowardGoal) {
+          match->GetMatchData()->AddSave(team->GetID());
+        }
+        
         bool canRetain = true;  // can we grab hold of the ball?
         if (currentAnim->anim->GetVariable("outgoing_retain_state").compare("") == 0)
           canRetain = false;  // not the right anim, hopeless!

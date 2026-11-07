@@ -54,6 +54,16 @@ int PlayerController::GetReactionTime_ms() {
   int reactionTime_ms = IController::GetReactionTime_ms();
   if (team->GetHumanGamerCount() == 0)
     reactionTime_ms += (1.0f - GetMatch()->GetMatchDifficulty()) * 100;
+
+  // CPU goalkeeper reaction delay: adds 150ms to keeper decision timing.
+  // Affects when keeper begins dive/deflect, not positioning or catch/parry.
+  // Applied equally to both CPU teams when both are computer-controlled.
+  constexpr int kCpuGoalkeeperReactionDelay_ms = 150;
+  if (team->GetHumanGamerCount() == 0 &&
+      CastPlayer()->GetFormationEntry().role == e_PlayerRole_GK) {
+    reactionTime_ms += kCpuGoalkeeperReactionDelay_ms;
+  }
+
   return reactionTime_ms;
 }
 
@@ -440,7 +450,10 @@ void PlayerController::_InterfereCommand(PlayerCommandQueue& commandQueue, bool 
   if (!teamHasBestPossession) {
     if (!byAnyMeans) {
       // if dot nears 1, it means opp is somewhat between ball and me
-      if (CouldWinABallDuelLikeliness() < 0.2f)
+      // CPU-only teams use a moderately lower threshold to attempt tackles.
+      // Balanced between original 0.2 and aggressive 0.1 for competitive play.
+      const float duelThreshold = (team->GetHumanGamerCount() == 0) ? 0.15f : 0.2f;
+      if (CouldWinABallDuelLikeliness() < duelThreshold)
         return;
     }
 
@@ -463,7 +476,12 @@ void PlayerController::_SlidingCommand(PlayerCommandQueue& commandQueue) {
     return;
   if (match->GetBallRetainer() != 0)
     return;
-  if (CouldWinABallDuelLikeliness() < 0.7f)
+
+  // CPU-only teams use relaxed thresholds for sliding tackles.
+  // Balanced threshold: more slides than original 0.7, but not from hopeless angles.
+  // 0.55 allows reasonable tackles while giving attackers more opportunities.
+  const float duelThreshold = 0.55f;  // was 0.7f original, 0.45f aggressive
+  if (CouldWinABallDuelLikeliness() < duelThreshold)
     return;
 
   if (!teamHasBestPossession && possessionAmount < 0.6f &&
@@ -473,8 +491,16 @@ void PlayerController::_SlidingCommand(PlayerCommandQueue& commandQueue) {
     Vector3 oppPos = _oppPlayer->GetPosition() + _oppPlayer->GetMovement() * 0.2;
 
     float ballDist = (playerPos - ballPos).GetLength();
-    if ((ballDist > 0.7f && ballDist < 1.6f && oppTimeNeededToGetToBall > 260) ||
-        (ballDist > 0.6f && ballDist < 1.8f &&
+    
+    // CPU-only: balanced distance window and opponent reaction time.
+    // Midpoint between original (0.7-1.6m, 260ms) and aggressive (0.5-2.2m, 180ms).
+    // Allows reasonable slides while giving attackers space to operate.
+    const float minDist = 0.6f;   // was 0.7f original, 0.5f aggressive
+    const float maxDist = 1.9f;   // was 1.6f original, 2.2f aggressive
+    const int oppTimeThreshold = 200;  // was 260 original, 180 aggressive
+    
+    if ((ballDist > minDist && ballDist < maxDist && oppTimeNeededToGetToBall > oppTimeThreshold) ||
+        (ballDist > 0.5f && ballDist < 2.0f &&
          _oppPlayer->GetCurrentFunctionType() == e_FunctionType_Shot &&
          _oppPlayer->TouchPending())) {
       // no opp in the way?

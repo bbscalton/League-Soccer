@@ -19,6 +19,7 @@ Referee::Referee(Match* match) : match(match) {
   buffer.restartPos = Vector3(0, 0, 0);
   buffer.taker = nullptr;
   buffer.endPhase = true;
+  buffer.endingPhase = e_MatchPhase_PreMatch;  // Initial kickoff
   buffer.active = true;
 
   foul.foulPlayer = nullptr;
@@ -109,6 +110,7 @@ void Referee::Process() {
         buffer.restartPos = Vector3(0);
         buffer.active = true;
         buffer.endPhase = true;
+        buffer.endingPhase = match->GetMatchPhase();  // Store phase BEFORE transition
         if (match->GetMatchPhase() == e_MatchPhase_1stHalf ||
             match->GetMatchPhase() == e_MatchPhase_1stExtraTime) {
           buffer.teamID = 1;
@@ -231,23 +233,59 @@ void Referee::Process() {
 
       if (buffer.prepareTime == match->GetActualTime_ms()) {
         if (buffer.endPhase == true) {
-          if (match->GetMatchPhase() == e_MatchPhase_PreMatch) {
-            match->SetMatchPhase(e_MatchPhase_1stHalf);
+          if (buffer.endingPhase == e_MatchPhase_PreMatch) {
+            // Match kickoff - no game-over check needed
           } else {
-            // game over conditions
-            if (match->GetMatchPhase() == e_MatchPhase_1stExtraTime) {
-              // Extra time is opt-in (knockout ties); league, career and
-              // friendly fixtures end level after 90 minutes.
-              if (match->GetScore(0) != match->GetScore(1) ||
-                  !GetConfiguration()->GetBool("match_extra_time", false)) {
+            // Game over conditions - use endingPhase (phase BEFORE transition)
+            // to correctly identify which phase just ended.
+            const bool isDraw = (match->GetScore(0) == match->GetScore(1));
+            const bool extraTimeEnabled = GetConfiguration()->GetBool("match_extra_time", false);
+            
+            if (buffer.endingPhase == e_MatchPhase_2ndHalf) {
+              // End of regulation (90 min)
+              if (!isDraw) {
+                // Decisive result - game over
+                printf("[API] Regulation ended with winner - game over\n");
+                match->GameOver();
+                return;
+              } else if (!extraTimeEnabled) {
+                // Draw and extra time disabled - game ends in draw
+                printf("[API] Regulation ended in draw, extra time disabled - game over\n");
                 match->GameOver();
                 return;
               }
+              // Draw with extra time enabled - continue to extra time
+              printf("[API] Regulation ended in draw, continuing to extra time\n");
             }
-            if (match->GetMatchPhase() == e_MatchPhase_Penalties) {
+            
+            if (buffer.endingPhase == e_MatchPhase_1stExtraTime) {
+              // End of 1st extra time (105 min)
+              if (!isDraw) {
+                // Decisive result in extra time - game over
+                printf("[API] 1st extra time ended with winner - game over\n");
+                match->GameOver();
+                return;
+              }
+              // Still drawn - continue to 2nd extra time
+              printf("[API] 1st extra time ended in draw, continuing to 2nd extra time\n");
+            }
+            
+            if (buffer.endingPhase == e_MatchPhase_2ndExtraTime) {
+              // End of 2nd extra time (120 min)
+              // Penalties would be configured separately; for now game ends here
+              printf("[API] 2nd extra time complete - game over\n");
               match->GameOver();
               return;
             }
+            
+            if (buffer.endingPhase == e_MatchPhase_Penalties) {
+              // Penalties complete
+              printf("[API] Penalties complete - game over\n");
+              match->GameOver();
+              return;
+            }
+            
+            // Not a terminal phase - signal phase change for UI
             match->sig_OnMatchPhaseChange(match);
           }
           buffer.endPhase = false;

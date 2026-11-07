@@ -78,6 +78,12 @@ public:
   // Get the port the server is listening on (-1 if not running)
   int GetPort() const { return serverPort; }
 
+  // Check if any API clients are connected (for disabling internal auto-rematch)
+  bool HasConnectedClients() const {
+    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(clientsMutex));
+    return !clientSockets.empty();
+  }
+
 protected:
   void AcceptLoop();
   void HandleClient(int clientSocket);

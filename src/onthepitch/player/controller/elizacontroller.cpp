@@ -1131,9 +1131,34 @@ void ElizaController::GetOnTheBallCommands(std::vector<PlayerCommand>& commandQu
     if (Verbose())
       printf("ODDS: %f\n", odds);
 
+    // Urgency bonus: when very close to goal, holding ball too long, or match
+    // time is running out, be more willing to shoot. This prevents attackers
+    // stalling at the keeper's feet and ensures action as the clock runs down.
+    float urgencyBonus = 0.0f;
+    if (idealShotPosFactor > 0.5f) {
+      // Close to goal: add urgency based on proximity
+      urgencyBonus += (idealShotPosFactor - 0.5f) * 0.3f;  // Up to +0.15 at point blank
+    }
+    if (longPossessionFactor > 0.3f) {
+      // Held ball too long: shoot rather than dither
+      urgencyBonus += (longPossessionFactor - 0.3f) * 0.2f;  // Up to +0.14 at 5 sec possession
+    }
+    // Match time urgency: last 3 minutes before period end (including stoppage).
+    // Uses GetPeriodEndTime_ms() to handle stoppage time correctly.
+    // Both teams get equal urgency, so this doesn't favor either side.
+    unsigned long matchTime_ms = match->GetMatchTime_ms();
+    unsigned long periodEnd_ms = match->GetPeriodEndTime_ms();
+    const unsigned long URGENCY_WINDOW_MS = 180000;  // 3 min before period end
+    if (matchTime_ms + URGENCY_WINDOW_MS > periodEnd_ms && matchTime_ms < periodEnd_ms) {
+      unsigned long timeRemaining_ms = periodEnd_ms - matchTime_ms;
+      float timeUrgency = 1.0f - (timeRemaining_ms / static_cast<float>(URGENCY_WINDOW_MS));
+      urgencyBonus += timeUrgency * 0.12f;  // 0 at 3:00 left, +0.12 at period end
+    }
+
     // PES 5/6 polish: reduce random luck in shot decisions — CPU should wait for
-    // a genuinely good angle before pulling the trigger.
-    if (odds + random(0.0f, 0.28f) > 0.55f) {
+    // a genuinely good angle before pulling the trigger. Urgency lowers threshold.
+    float shotThreshold = 0.55f - urgencyBonus;
+    if (odds + random(0.0f, 0.28f) > shotThreshold) {
       PlayerCommand command;
       command.desiredFunctionType = e_FunctionType_Shot;
       command.useDesiredMovement = false;
