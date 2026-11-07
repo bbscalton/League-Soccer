@@ -622,6 +622,17 @@ float Player::GetStat(const char* name) const {
 
   if (playerData->GetStat(name) == 0.0f)
     printf("NULLSTAT: name: %s\n", name);
+
+  // CPU-only maximum tackle skills override (runtime, no DB mutation).
+  // Applies only when team has no human gamers (pure CPU control).
+  // Canonical max is 1.0 (clamped in PlayerData::GetStat).
+  if (team->GetHumanGamerCount() == 0) {
+    if (strcmp(name, "technical_standingtackle") == 0 ||
+        strcmp(name, "technical_slidingtackle") == 0) {
+      return 1.0f * multiplier;  // Max tackle skill for CPU teams
+    }
+  }
+
   // printf("stat %s: %f * %f\n", name, playerData->GetStat(name), multiplier);
   return playerData->GetStat(name) * multiplier;
 }

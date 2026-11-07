@@ -97,7 +97,45 @@ MenuTask::MenuTask(float aspectRatio, float margin, TTF_Font* defaultFont,
   PageFactory* pageFactory = new PageFactory();
   windowManager->SetPageFactory(pageFactory);
 
-  if (!QuickStart()) {
+  if (IsAPIMode()) {
+    // API mode: CPU vs CPU by default (api_direct_player_control=false).
+    // When api_direct_player_control=true, API gamepads control home/away teams
+    // and the 'action' command drives player input directly.
+    bool directControl = GetConfiguration()->GetBool("api_direct_player_control", false);
+    if (directControl) {
+      printf("[API] API mode with DIRECT player control (api_direct_player_control=true)\n");
+    } else {
+      printf("[API] API mode: CPU vs CPU autoplay (api_direct_player_control=false)\n");
+    }
+
+    int size = GetControllers().size();
+    for (int i = 0; i < size; i++) {
+      SideSelection side;
+      side.controllerID = i;
+      if (directControl) {
+        // Direct control: API gamepads control home (side=-1) and away (side=1)
+        if (i == 0)
+          side.side = -1;  // Home team controlled by first API gamepad
+        else if (i == 1)
+          side.side = 1;   // Away team controlled by second API gamepad
+        else
+          side.side = 0;   // AI for any extra controllers
+      } else {
+        // CPU autoplay: both teams controlled by AI (side=0)
+        side.side = 0;
+      }
+      queuedFixture->sides.push_back(side);
+    }
+
+    // Default teams for API mode
+    queuedFixture->teamID1 = "3";  // Barcelona
+    queuedFixture->teamID2 = "8";  // Real Madrid
+    queuedFixture->team1KitNum = 1;
+    queuedFixture->team2KitNum = 2;
+
+    menuAction = e_MenuAction_Menu;
+
+  } else if (!QuickStart()) {
     queuedFixture->team1KitNum = 1;
     queuedFixture->team2KitNum = 2;
 
@@ -165,6 +203,11 @@ void MenuTask::ProcessPhase() {
   HandleRemovedControllers();
   Gui2Task::ProcessPhase();
 
+  if (menuAction != e_MenuAction_None) {
+    printf("[MENU] ProcessPhase: menuAction=%d, IsAPIMode=%d\n", static_cast<int>(menuAction),
+           IsAPIMode() ? 1 : 0);
+  }
+
   if (menuAction == e_MenuAction_Menu) {
     windowManager->GetPagePath()->Clear();
 
@@ -181,6 +224,14 @@ void MenuTask::ProcessPhase() {
       CareerSave* save = CareerDatabase::GetInstance().GetActiveSave();
       const int hubPage = CareerHubPageID(save);
       windowManager->GetPageFactory()->CreatePage(hubPage, properties, 0);
+    } else if (IsAPIMode()) {
+      // API mode: skip intro/menus completely, go straight to loading the match
+      printf("[API] API mode: skipping intro, loading match immediately\n");
+      printf("[API] Creating LoadingMatch page...\n");
+      fflush(stdout);
+      windowManager->GetPageFactory()->CreatePage((int)e_PageID_LoadingMatch, properties, 0);
+      printf("[API] LoadingMatch page created\n");
+      fflush(stdout);
     } else if (!QuickStart()) {
       if (!IsReleaseVersion()) {
         windowManager->GetPageFactory()->CreatePage((int)e_PageID_MainMenu, properties, 0);
@@ -192,9 +243,13 @@ void MenuTask::ProcessPhase() {
     }
 
   } else if (menuAction == e_MenuAction_Game) {
+    printf("[MENU] menuAction == e_MenuAction_Game: starting match\n");
+    fflush(stdout);
     menuBackground->Hide();
     GetGameTask()->Action(e_GameTaskMessage_StopMenuScene);
     GetGameTask()->Action(e_GameTaskMessage_StartMatch);
+    printf("[MENU] Match started\n");
+    fflush(stdout);
   }
 
   menuAction = e_MenuAction_None;

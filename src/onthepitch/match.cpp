@@ -861,6 +861,18 @@ signed int Match::GetBestPossessionTeamID() {
 
 void Match::GameOver() {
   gameOver = true;
+  
+  // Log match telemetry summary for debugging and analysis
+  if (matchData) {
+    printf("[MATCH_STATS] home_shots=%d home_on_target=%d home_goals=%d home_saves=%d "
+           "away_shots=%d away_on_target=%d away_goals=%d away_saves=%d "
+           "home_passes=%d/%d away_passes=%d/%d home_fouls=%d away_fouls=%d\n",
+           matchData->GetShots(0), matchData->GetShotsOnTarget(0), matchData->GetGoalCount(0), matchData->GetSaves(0),
+           matchData->GetShots(1), matchData->GetShotsOnTarget(1), matchData->GetGoalCount(1), matchData->GetSaves(1),
+           matchData->GetPassesCompleted(0), matchData->GetPassAttempts(0),
+           matchData->GetPassesCompleted(1), matchData->GetPassAttempts(1),
+           matchData->GetFouls(0), matchData->GetFouls(1));
+  }
 }
 
 void Match::AddExcitementBoost(float amount, int duration_ms) {
@@ -1081,7 +1093,8 @@ void Match::UpdateIngameCamera() {
     cameraNearCap = 1;
     cameraFarCap = 220;
 
-    if (goalScoredTimer == 6000) {
+    // Skip replay in API mode - automation runs faster without user watching replays
+    if (goalScoredTimer == 6000 && !IsAPIMode()) {
       pause = true;
       sig_OnExtendedReplayMoment(this);
     }
@@ -1457,6 +1470,18 @@ void Match::FetchPutBuffers() {
 void Match::Put() {
   if (GetIterations() < 2)
     return;  // no processes done yet (todo: this is not the correct way to measure that :p)
+
+  // Track warmup frames for GPU texture/shader warmup.
+  // Count rendered frames until warmup is complete. The referee waits for this
+  // before blowing the whistle. Continue counting even if phase transitions to
+  // 1stHalf (which happens at prepareTime, before startTime).
+  if (warmupFramesRendered < kWarmupFramesRequired) {
+    warmupFramesRendered++;
+    if (warmupFramesRendered == kWarmupFramesRequired) {
+      Log(e_Notice, "Match", "Put",
+          "GPU warmup complete after " + int_to_str(kWarmupFramesRequired) + " frames");
+    }
+  }
 
   // fun!
   // sunNode->SetPosition(Vector3(sin(buf_actualTime_ms * 0.001) * 3000, cos(buf_actualTime_ms *

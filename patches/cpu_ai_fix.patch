@@ -1,0 +1,754 @@
+diff --git a/src/api/api_server.hpp b/src/api/api_server.hpp
+index 345c9c1..34cc23b 100644
+--- a/src/api/api_server.hpp
++++ b/src/api/api_server.hpp
+@@ -78,6 +78,12 @@ public:
+   // Get the port the server is listening on (-1 if not running)
+   int GetPort() const { return serverPort; }
+ 
++  // Check if any API clients are connected (for disabling internal auto-rematch)
++  bool HasConnectedClients() const {
++    std::lock_guard<std::mutex> lock(const_cast<std::mutex&>(clientsMutex));
++    return !clientSockets.empty();
++  }
++
+ protected:
+   void AcceptLoop();
+   void HandleClient(int clientSocket);
+diff --git a/src/api/match_api.cpp b/src/api/match_api.cpp
+index 76bd5fe..6602652 100644
+--- a/src/api/match_api.cpp
++++ b/src/api/match_api.cpp
+@@ -82,8 +82,11 @@ bool MatchAPIController::Step(StepResult& result) {
+   // Populate observation
+   PopulateObservation(result.observation);
+ 
+-  // Check if match is done
+-  result.done = false;  // Would check match->GetMatchPhase()
++  // Check if match is done.
++  // Note: This MatchAPIController is not currently used by the main game;
++  // the step/observe callbacks in main.cpp access the live Match directly.
++  // This placeholder returns false; actual done detection is in main.cpp.
++  result.done = false;
+ 
+   return true;
+ }
+diff --git a/src/gametask.cpp b/src/gametask.cpp
+index 8a1e460..e784590 100644
+--- a/src/gametask.cpp
++++ b/src/gametask.cpp
+@@ -1,6 +1,8 @@
+ #include "gametask.hpp"
+ 
++#include "base/math/bluntmath.hpp"
+ #include "blunted.hpp"
++#include "data/matchdata.hpp"
+ #include "framework/scheduler.hpp"
+ #include "main.hpp"
+ #include "managers/resourcemanagerpool.hpp"
+@@ -118,6 +120,10 @@ void GameTask::GetPhase() {
+ }
+ 
+ void GameTask::ProcessPhase() {
++  // Check for pending API requests - execute on main thread for safety
++  ProcessPendingReset();
++  ProcessPendingQuit();
++
+   for (unsigned int i = 0; i < GetControllers().size(); i++) {
+     GetControllers().at(i)->Process();
+   }
+@@ -135,6 +141,159 @@ void GameTask::ProcessPhase() {
+   }
+ }
+ 
++bool GameTask::RequestReset(int seed, int home_team_id, int away_team_id,
++                            float match_duration_minutes, std::string& error) {
++  // Queue the reset request for main thread execution
++  {
++    std::lock_guard<std::mutex> lock(pendingResetMutex);
++    if (pendingReset.pending) {
++      error = "Another reset is already pending";
++      return false;
++    }
++    pendingReset.pending = true;
++    pendingReset.seed = seed;
++    pendingReset.home_team_id = home_team_id;
++    pendingReset.away_team_id = away_team_id;
++    pendingReset.match_duration_minutes = match_duration_minutes;
++    pendingReset.completed = false;
++    pendingReset.success = false;
++    pendingReset.error.clear();
++  }
++
++  // Wait for completion (main thread will process and signal)
++  {
++    std::unique_lock<std::mutex> lock(pendingReset.completionMutex);
++    // Wait up to 10 seconds for the reset to complete
++    bool completed = pendingReset.completionCV.wait_for(
++        lock, std::chrono::seconds(10),
++        [this] { return pendingReset.completed; });
++
++    if (!completed) {
++      std::lock_guard<std::mutex> resetLock(pendingResetMutex);
++      pendingReset.pending = false;
++      error = "Reset timed out waiting for main thread";
++      return false;
++    }
++
++    error = pendingReset.error;
++    return pendingReset.success;
++  }
++}
++
++void GameTask::ProcessPendingReset() {
++  std::lock_guard<std::mutex> lock(pendingResetMutex);
++  if (!pendingReset.pending) {
++    return;
++  }
++
++  printf("[API] Processing pending reset on main thread: seed=%d, home=%d, away=%d\n",
++         pendingReset.seed, pendingReset.home_team_id, pendingReset.away_team_id);
++
++  bool success = true;
++  std::string error;
++
++  // Set seed if provided
++  if (pendingReset.seed >= 0) {
++    srand(static_cast<unsigned int>(pendingReset.seed));
++    randomseed();
++    fastrandomseed();
++    printf("[API] Set deterministic seed: %d\n", pendingReset.seed);
++  }
++
++  // Set match duration in config
++  if (pendingReset.match_duration_minutes > 0) {
++    GetConfiguration()->Set("match_duration_minutes", pendingReset.match_duration_minutes);
++    printf("[API] Set match duration: %.1f minutes\n", pendingReset.match_duration_minutes);
++  }
++
++  // Stop existing match
++  if (match) {
++    printf("[API] Stopping existing match\n");
++    Action(e_GameTaskMessage_StopMatch);
++  }
++
++  // Configure teams
++  int homeTeam = pendingReset.home_team_id >= 0 ? pendingReset.home_team_id : 3;
++  int awayTeam = pendingReset.away_team_id >= 0 ? pendingReset.away_team_id : 8;
++
++  printf("[API] Setting up teams: home=%d, away=%d\n", homeTeam, awayTeam);
++  GetMenuTask()->SetTeamIDs(std::to_string(homeTeam), std::to_string(awayTeam));
++
++  // Set up controller sides
++  bool directControl = GetConfiguration()->GetBool("api_direct_player_control", false);
++  std::vector<SideSelection> sides;
++  for (size_t i = 0; i < GetControllers().size(); i++) {
++    SideSelection side;
++    side.controllerID = static_cast<int>(i);
++    if (directControl) {
++      if (i == 0)
++        side.side = -1;
++      else if (i == 1)
++        side.side = 1;
++      else
++        side.side = 0;
++    } else {
++      side.side = 0;
++    }
++    sides.push_back(side);
++  }
++  GetMenuTask()->SetControllerSetup(sides);
++  printf("[API] Controller setup: %zu controllers, direct_control=%s\n",
++         sides.size(), directControl ? "true" : "false");
++
++  // Create MatchData
++  MatchData* matchData = new MatchData(homeTeam, awayTeam);
++  if (!matchData) {
++    error = "Failed to create match data";
++    printf("[API] Reset failed: could not create MatchData\n");
++    success = false;
++  } else {
++    GetMenuTask()->SetMatchData(matchData);
++
++    // Start the match
++    printf("[API] Starting match...\n");
++    Action(e_GameTaskMessage_StopMenuScene);
++    Action(e_GameTaskMessage_StartMatch);
++
++    // Verify match was created
++    if (!match) {
++      error = "Match failed to start";
++      printf("[API] Reset failed: GetMatch() returned null after StartMatch\n");
++      success = false;
++    } else {
++      printf("[API] Match started successfully: %s vs %s\n",
++             matchData->GetTeamData(0)->GetName().c_str(),
++             matchData->GetTeamData(1)->GetName().c_str());
++    }
++  }
++
++  // Signal completion
++  {
++    std::lock_guard<std::mutex> completionLock(pendingReset.completionMutex);
++    pendingReset.success = success;
++    pendingReset.error = error;
++    pendingReset.completed = true;
++    pendingReset.pending = false;
++  }
++  pendingReset.completionCV.notify_all();
++}
++
++void GameTask::RequestQuit() {
++  // Queue quit for main thread execution - safe during loading/gameplay.
++  printf("[API] Quit queued for main thread execution\n");
++  pendingQuit.pending.store(true);
++}
++
++void GameTask::ProcessPendingQuit() {
++  if (!pendingQuit.pending.load()) {
++    return;
++  }
++  
++  printf("[API] Processing pending quit on main thread\n");
++  pendingQuit.pending.store(false);
++  EnvironmentManager::GetInstance().SignalQuit();
++}
++
+ void GameTask::PutPhase() {
+   std::vector<boost::intrusive_ptr<UpdateFullbodyModel>> updateFullbodyModels;
+   std::vector<boost::intrusive_ptr<UploadFullbodyModel>> uploadFullbodyModels;
+diff --git a/src/gametask.hpp b/src/gametask.hpp
+index f647ffe..d7396b5 100644
+--- a/src/gametask.hpp
++++ b/src/gametask.hpp
+@@ -1,6 +1,9 @@
+ #ifndef _HPP_FOOTBALL_GAMETASK
+ #define _HPP_FOOTBALL_GAMETASK
+ 
++#include <atomic>
++#include <condition_variable>
++
+ #include "hid/gamepad.hpp"
+ #include "hid/keyboard.hpp"
+ #include "menu/menuscene.hpp"
+@@ -9,6 +12,28 @@
+ #include "types/iusertask.hpp"
+ #include "types/thread.hpp"
+ 
++// Pending API reset request - populated by API thread, executed on main thread.
++// This avoids race conditions from destroying/creating match resources across threads.
++struct PendingResetRequest {
++  bool pending = false;
++  int seed = -1;
++  int home_team_id = -1;
++  int away_team_id = -1;
++  float match_duration_minutes = 0.0f;
++  
++  // Completion signaling
++  bool completed = false;
++  bool success = false;
++  std::string error;
++  std::condition_variable completionCV;
++  std::mutex completionMutex;
++};
++
++// Pending API quit request - scheduled on main thread for safe teardown.
++struct PendingQuitRequest {
++  std::atomic<bool> pending{false};
++};
++
+ using namespace blunted;
+ 
+ class UpdateFullbodyModel : public Command {
+@@ -74,6 +99,13 @@ public:
+   Match* GetMatch() { return match; }
+   MenuScene* GetMenuScene() { return menuScene; }
+ 
++  // Thread-safe reset request from API - queues for main thread execution
++  bool RequestReset(int seed, int home_team_id, int away_team_id,
++                    float match_duration_minutes, std::string& error);
++
++  // Thread-safe quit request from API - queues for main thread execution
++  void RequestQuit();
++
+   MessageQueue<e_GameTaskMessage> messageQueue;
+ 
+   virtual std::string GetName() const { return "game"; }
+@@ -88,6 +120,15 @@ protected:
+   std::mutex menuSceneLifetimeMutex;
+ 
+   std::shared_ptr<Scene3D> scene3D;
++
++  // Pending reset from API thread - processed in ProcessPhase on main thread
++  PendingResetRequest pendingReset;
++  std::mutex pendingResetMutex;
++  void ProcessPendingReset();
++
++  // Pending quit from API thread - processed in ProcessPhase on main thread
++  PendingQuitRequest pendingQuit;
++  void ProcessPendingQuit();
+ };
+ 
+ #endif
+diff --git a/src/main.cpp b/src/main.cpp
+index 9067e54..c4c5b21 100644
+--- a/src/main.cpp
++++ b/src/main.cpp
+@@ -278,6 +278,12 @@ bool IsAPIMode() {
+   return GetConfiguration()->GetBool("api_mode", false);
+ }
+ 
++bool HasAPIClients() {
++  // When an external API client is connected, it controls match cycling.
++  // The game should NOT auto-rematch; wait for client reset commands instead.
++  return g_apiServer && g_apiServer->HasConnectedClients();
++}
++
+ bool Verbose() {
+   return !IsReleaseVersion();
+ }
+@@ -822,77 +828,13 @@ int main(int argc, const char** argv) {
+         return false;
+       }
+ 
+-      // Set seed if provided (must be done before match creation)
+-      if (params.seed >= 0) {
+-        srand(static_cast<unsigned int>(params.seed));
+-        randomseed();
+-        fastrandomseed();
+-        printf("[API] Set deterministic seed: %d\n", params.seed);
+-      }
+-
+-      // Set match duration in config (match reads it from there)
+-      if (params.match_duration_minutes > 0) {
+-        GetConfiguration()->Set("match_duration_minutes", params.match_duration_minutes);
+-        printf("[API] Set match duration: %.1f minutes\n", params.match_duration_minutes);
+-      }
+-
+-      // Stop any existing match
+-      if (gameTask->GetMatch()) {
+-        printf("[API] Stopping existing match\n");
+-        gameTask->Action(e_GameTaskMessage_StopMatch);
+-      }
+-
+-      // Configure teams (use defaults if not specified)
+-      int homeTeam = params.home_team_id >= 0 ? params.home_team_id : 3;  // Barcelona
+-      int awayTeam = params.away_team_id >= 0 ? params.away_team_id : 8;  // Real Madrid
+-
+-      printf("[API] Setting up teams: home=%d, away=%d\n", homeTeam, awayTeam);
+-      menuTask->SetTeamIDs(std::to_string(homeTeam), std::to_string(awayTeam));
+-
+-      // Set up controller sides - API gamepads control both teams
+-      // This allows the API to send actions that affect the game
+-      std::vector<SideSelection> sides;
+-      for (size_t i = 0; i < controllers.size(); i++) {
+-        SideSelection side;
+-        side.controllerID = static_cast<int>(i);
+-        if (i == 0)
+-          side.side = -1;  // Home team
+-        else if (i == 1)
+-          side.side = 1;  // Away team
+-        else
+-          side.side = 0;  // AI
+-        sides.push_back(side);
+-      }
+-      menuTask->SetControllerSetup(sides);
+-      printf("[API] Controller setup: %zu controllers configured\n", sides.size());
+-
+-      // Create MatchData
+-      MatchData* matchData = new MatchData(homeTeam, awayTeam);
+-      if (!matchData) {
+-        error = "Failed to create match data";
+-        printf("[API] Reset failed: could not create MatchData\n");
+-        return false;
+-      }
+-      menuTask->SetMatchData(matchData);
+-
+-      // Stop menu scene and start the match
+-      printf("[API] Starting match...\n");
+-      gameTask->Action(e_GameTaskMessage_StopMenuScene);
+-      gameTask->Action(e_GameTaskMessage_StartMatch);
+-
+-      // Verify match was created
+-      Match* match = gameTask->GetMatch();
+-      if (!match) {
+-        error = "Match failed to start";
+-        printf("[API] Reset failed: GetMatch() returned null after StartMatch\n");
+-        return false;
+-      }
+-
+-      printf("[API] Match started successfully: %s vs %s\n",
+-             matchData->GetTeamData(0)->GetName().c_str(),
+-             matchData->GetTeamData(1)->GetName().c_str());
+-
+-      return true;
++      // Queue reset request for main thread execution to avoid race conditions.
++      // The API callback runs on a network thread; destroying/creating match
++      // resources here would race with render/physics threads accessing them.
++      // RequestReset queues the work and blocks until the main thread completes it.
++      printf("[API] Queueing reset for main thread execution...\n");
++      return gameTask->RequestReset(params.seed, params.home_team_id, params.away_team_id,
++                                    params.match_duration_minutes, error);
+     });
+ 
+     // Step callback: return current match state (the game loop ticks automatically)
+@@ -909,10 +851,9 @@ int main(int argc, const char** argv) {
+       }
+ 
+       e_MatchPhase phase = match->GetMatchPhase();
+-      // Match is done after penalties or if we're past 2nd half (for non-extra-time matches)
+-      result.done = (phase == e_MatchPhase_Penalties && match->GetMatchTime_ms() > 0) ||
+-                    (phase > e_MatchPhase_2ndHalf && phase != e_MatchPhase_1stExtraTime &&
+-                     phase != e_MatchPhase_2ndExtraTime);
++      // Match is done when GameOver() has been called by the referee.
++      // This handles all end conditions: regulation win/draw, extra time, penalties.
++      result.done = match->IsGameOver();
+       result.observation.score_home = match->GetScore(0);
+       result.observation.score_away = match->GetScore(1);
+       result.observation.match_time_ms = match->GetMatchTime_ms();
+@@ -997,10 +938,15 @@ int main(int argc, const char** argv) {
+       return true;
+     });
+ 
+-    // Quit callback
++    // Quit callback - schedule on main thread for safe teardown during loading
+     g_apiServer->SetQuitCallback([]() {
+       printf("[API] Quit requested\n");
+-      EnvironmentManager::GetInstance().SignalQuit();
++      if (gameTask) {
++        gameTask->RequestQuit();
++      } else {
++        // No game task yet - direct quit is safe
++        EnvironmentManager::GetInstance().SignalQuit();
++      }
+     });
+ 
+     printf("[API] Match control callbacks registered\n");
+diff --git a/src/main.hpp b/src/main.hpp
+index 81f83ab..4397c88 100644
+--- a/src/main.hpp
++++ b/src/main.hpp
+@@ -41,6 +41,7 @@ std::shared_ptr<MenuTask> GetMenuTask();
+ 
+ bool IsReleaseVersion();
+ bool IsAPIMode();  // Returns true when api_mode is enabled (hands-off operation)
++bool HasAPIClients();  // Returns true when API clients are connected (disables auto-rematch)
+ bool Verbose();
+ bool UpdateNonImportableDB();
+ 
+diff --git a/src/menu/ingame/gameover.cpp b/src/menu/ingame/gameover.cpp
+index 5177b5d..37f174b 100644
+--- a/src/menu/ingame/gameover.cpp
++++ b/src/menu/ingame/gameover.cpp
+@@ -315,8 +315,9 @@ void GameOverPage::Process() {
+   const unsigned long quitDelay_ms = static_cast<unsigned long>(
+       GetConfiguration()->GetInt("menu_smoke_quit_delay_ms", kMenuSmokeQuitDelay_ms));
+ 
+-  // API mode: auto-start a new match (no human input required)
+-  // The automation runs repeating match cycles with no person at the keyboard.
++  // API mode: when an external client is connected, it controls match cycling.
++  // Don't auto-rematch; the client will send reset commands for new matches.
++  // When no client is connected, auto-start a new match for standalone testing.
+   if (!autoQuitTriggered && IsAPIMode() &&
+       EnvironmentManager::GetInstance().GetTime_ms() >= pageCreatedTime_ms + quitDelay_ms) {
+     autoQuitTriggered = true;
+@@ -324,8 +325,16 @@ void GameOverPage::Process() {
+            match->GetTeam(0)->GetTeamData()->GetName().c_str(),
+            match->GetMatchData()->GetGoalCount(0), match->GetMatchData()->GetGoalCount(1),
+            match->GetTeam(1)->GetTeamData()->GetName().c_str());
+-    printf("[API] Auto-starting new match (computer vs computer, no human input)\n");
+-    GoRematch();
++    
++    if (HasAPIClients()) {
++      // External client connected - it controls match cycling via reset commands.
++      // Stay on game over screen until client sends reset or quit.
++      printf("[API] External client connected - waiting for reset command (no auto-rematch)\n");
++    } else {
++      // No client connected - standalone API mode, auto-rematch for testing.
++      printf("[API] Auto-starting new match (computer vs computer, no human input)\n");
++      GoRematch();
++    }
+     return;
+   }
+ 
+diff --git a/src/menu/menutask.cpp b/src/menu/menutask.cpp
+index b7f4c92..ee7d4c9 100644
+--- a/src/menu/menutask.cpp
++++ b/src/menu/menutask.cpp
+@@ -98,22 +98,32 @@ MenuTask::MenuTask(float aspectRatio, float margin, TTF_Font* defaultFont,
+   windowManager->SetPageFactory(pageFactory);
+ 
+   if (IsAPIMode()) {
+-    // API mode: set up default teams with API gamepads controlling both sides
+-    // No intro, no menus, no user prompts - the API server handles control
+-    printf("[API] API mode: setting up default match (Barcelona vs Real Madrid)\n");
++    // API mode: CPU vs CPU by default (api_direct_player_control=false).
++    // When api_direct_player_control=true, API gamepads control home/away teams
++    // and the 'action' command drives player input directly.
++    bool directControl = GetConfiguration()->GetBool("api_direct_player_control", false);
++    if (directControl) {
++      printf("[API] API mode with DIRECT player control (api_direct_player_control=true)\n");
++    } else {
++      printf("[API] API mode: CPU vs CPU autoplay (api_direct_player_control=false)\n");
++    }
+ 
+     int size = GetControllers().size();
+     for (int i = 0; i < size; i++) {
+       SideSelection side;
+       side.controllerID = i;
+-      // API gamepads control home (side=-1) and away (side=1) teams
+-      // This allows the API to send actions that affect the game
+-      if (i == 0)
+-        side.side = -1;  // Home team controlled by first API gamepad
+-      else if (i == 1)
+-        side.side = 1;  // Away team controlled by second API gamepad
+-      else
+-        side.side = 0;  // AI
++      if (directControl) {
++        // Direct control: API gamepads control home (side=-1) and away (side=1)
++        if (i == 0)
++          side.side = -1;  // Home team controlled by first API gamepad
++        else if (i == 1)
++          side.side = 1;   // Away team controlled by second API gamepad
++        else
++          side.side = 0;   // AI for any extra controllers
++      } else {
++        // CPU autoplay: both teams controlled by AI (side=0)
++        side.side = 0;
++      }
+       queuedFixture->sides.push_back(side);
+     }
+ 
+diff --git a/src/onthepitch/match.cpp b/src/onthepitch/match.cpp
+index 41db7bb..e9ba1b5 100644
+--- a/src/onthepitch/match.cpp
++++ b/src/onthepitch/match.cpp
+@@ -1460,8 +1460,10 @@ void Match::Put() {
+     return;  // no processes done yet (todo: this is not the correct way to measure that :p)
+ 
+   // Track warmup frames for GPU texture/shader warmup.
+-  // During PreMatch, count rendered frames so the referee knows when to start.
+-  if (matchPhase == e_MatchPhase_PreMatch && warmupFramesRendered < kWarmupFramesRequired) {
++  // Count rendered frames until warmup is complete. The referee waits for this
++  // before blowing the whistle. Continue counting even if phase transitions to
++  // 1stHalf (which happens at prepareTime, before startTime).
++  if (warmupFramesRendered < kWarmupFramesRequired) {
+     warmupFramesRendered++;
+     if (warmupFramesRendered == kWarmupFramesRequired) {
+       Log(e_Notice, "Match", "Put",
+diff --git a/src/onthepitch/match.hpp b/src/onthepitch/match.hpp
+index 3caeb9e..1c9a64e 100644
+--- a/src/onthepitch/match.hpp
++++ b/src/onthepitch/match.hpp
+@@ -154,6 +154,7 @@ public:
+   Officials* GetOfficials() { return officials.get(); }
+   const RefereeBuffer& GetRefereeBuffer() { return referee->GetBuffer(); };
+ 
++  bool IsGameOver() const { return gameOver; }
+   void SetGoalScored(bool onOff) {
+     if (onOff == false)
+       ballIsInGoal = false;
+diff --git a/src/onthepitch/player/controller/playercontroller.cpp b/src/onthepitch/player/controller/playercontroller.cpp
+index 26aafb6..5b1f332 100644
+--- a/src/onthepitch/player/controller/playercontroller.cpp
++++ b/src/onthepitch/player/controller/playercontroller.cpp
+@@ -440,7 +440,10 @@ void PlayerController::_InterfereCommand(PlayerCommandQueue& commandQueue, bool
+   if (!teamHasBestPossession) {
+     if (!byAnyMeans) {
+       // if dot nears 1, it means opp is somewhat between ball and me
+-      if (CouldWinABallDuelLikeliness() < 0.2f)
++      // CPU-only teams use a lower threshold to attempt tackles from worse angles.
++      // This creates more contested situations and potential fouls.
++      const float duelThreshold = (team->GetHumanGamerCount() == 0) ? 0.1f : 0.2f;
++      if (CouldWinABallDuelLikeliness() < duelThreshold)
+         return;
+     }
+ 
+@@ -463,7 +466,13 @@ void PlayerController::_SlidingCommand(PlayerCommandQueue& commandQueue) {
+     return;
+   if (match->GetBallRetainer() != 0)
+     return;
+-  if (CouldWinABallDuelLikeliness() < 0.7f)
++
++  // CPU-only teams use relaxed thresholds for more aggressive sliding tackles.
++  // Human-controlled teams (checked above) never reach here.
++  // Original threshold 0.7 was very restrictive; 0.45 allows slides from
++  // more approach angles while still requiring a reasonable chance of success.
++  const float duelThreshold = 0.45f;  // was 0.7f
++  if (CouldWinABallDuelLikeliness() < duelThreshold)
+     return;
+ 
+   if (!teamHasBestPossession && possessionAmount < 0.6f &&
+@@ -473,8 +482,17 @@ void PlayerController::_SlidingCommand(PlayerCommandQueue& commandQueue) {
+     Vector3 oppPos = _oppPlayer->GetPosition() + _oppPlayer->GetMovement() * 0.2;
+ 
+     float ballDist = (playerPos - ballPos).GetLength();
+-    if ((ballDist > 0.7f && ballDist < 1.6f && oppTimeNeededToGetToBall > 260) ||
+-        (ballDist > 0.6f && ballDist < 1.8f &&
++    
++    // CPU-only: wider distance window and shorter opponent reaction time requirement.
++    // Original: 0.7-1.6m with oppTime > 260ms
++    // Relaxed: 0.5-2.2m with oppTime > 180ms - allows slides from further out
++    // and when opponent is closer to ball (more contested situations).
++    const float minDist = 0.5f;   // was 0.7f
++    const float maxDist = 2.2f;   // was 1.6f
++    const int oppTimeThreshold = 180;  // was 260
++    
++    if ((ballDist > minDist && ballDist < maxDist && oppTimeNeededToGetToBall > oppTimeThreshold) ||
++        (ballDist > 0.5f && ballDist < 2.0f &&
+          _oppPlayer->GetCurrentFunctionType() == e_FunctionType_Shot &&
+          _oppPlayer->TouchPending())) {
+       // no opp in the way?
+diff --git a/src/onthepitch/player/player.cpp b/src/onthepitch/player/player.cpp
+index a9f73af..23cc593 100644
+--- a/src/onthepitch/player/player.cpp
++++ b/src/onthepitch/player/player.cpp
+@@ -622,6 +622,17 @@ float Player::GetStat(const char* name) const {
+ 
+   if (playerData->GetStat(name) == 0.0f)
+     printf("NULLSTAT: name: %s\n", name);
++
++  // CPU-only maximum tackle skills override (runtime, no DB mutation).
++  // Applies only when team has no human gamers (pure CPU control).
++  // Canonical max is 1.0 (clamped in PlayerData::GetStat).
++  if (team->GetHumanGamerCount() == 0) {
++    if (strcmp(name, "technical_standingtackle") == 0 ||
++        strcmp(name, "technical_slidingtackle") == 0) {
++      return 1.0f * multiplier;  // Max tackle skill for CPU teams
++    }
++  }
++
+   // printf("stat %s: %f * %f\n", name, playerData->GetStat(name), multiplier);
+   return playerData->GetStat(name) * multiplier;
+ }
+diff --git a/src/onthepitch/referee.cpp b/src/onthepitch/referee.cpp
+index 5a7305b..fe0d452 100644
+--- a/src/onthepitch/referee.cpp
++++ b/src/onthepitch/referee.cpp
+@@ -19,6 +19,7 @@ Referee::Referee(Match* match) : match(match) {
+   buffer.restartPos = Vector3(0, 0, 0);
+   buffer.taker = nullptr;
+   buffer.endPhase = true;
++  buffer.endingPhase = e_MatchPhase_PreMatch;  // Initial kickoff
+   buffer.active = true;
+ 
+   foul.foulPlayer = nullptr;
+@@ -109,6 +110,7 @@ void Referee::Process() {
+         buffer.restartPos = Vector3(0);
+         buffer.active = true;
+         buffer.endPhase = true;
++        buffer.endingPhase = match->GetMatchPhase();  // Store phase BEFORE transition
+         if (match->GetMatchPhase() == e_MatchPhase_1stHalf ||
+             match->GetMatchPhase() == e_MatchPhase_1stExtraTime) {
+           buffer.teamID = 1;
+@@ -231,23 +233,59 @@ void Referee::Process() {
+ 
+       if (buffer.prepareTime == match->GetActualTime_ms()) {
+         if (buffer.endPhase == true) {
+-          if (match->GetMatchPhase() == e_MatchPhase_PreMatch) {
+-            match->SetMatchPhase(e_MatchPhase_1stHalf);
++          if (buffer.endingPhase == e_MatchPhase_PreMatch) {
++            // Match kickoff - no game-over check needed
+           } else {
+-            // game over conditions
+-            if (match->GetMatchPhase() == e_MatchPhase_1stExtraTime) {
+-              // Extra time is opt-in (knockout ties); league, career and
+-              // friendly fixtures end level after 90 minutes.
+-              if (match->GetScore(0) != match->GetScore(1) ||
+-                  !GetConfiguration()->GetBool("match_extra_time", false)) {
++            // Game over conditions - use endingPhase (phase BEFORE transition)
++            // to correctly identify which phase just ended.
++            const bool isDraw = (match->GetScore(0) == match->GetScore(1));
++            const bool extraTimeEnabled = GetConfiguration()->GetBool("match_extra_time", false);
++            
++            if (buffer.endingPhase == e_MatchPhase_2ndHalf) {
++              // End of regulation (90 min)
++              if (!isDraw) {
++                // Decisive result - game over
++                printf("[API] Regulation ended with winner - game over\n");
++                match->GameOver();
++                return;
++              } else if (!extraTimeEnabled) {
++                // Draw and extra time disabled - game ends in draw
++                printf("[API] Regulation ended in draw, extra time disabled - game over\n");
+                 match->GameOver();
+                 return;
+               }
++              // Draw with extra time enabled - continue to extra time
++              printf("[API] Regulation ended in draw, continuing to extra time\n");
++            }
++            
++            if (buffer.endingPhase == e_MatchPhase_1stExtraTime) {
++              // End of 1st extra time (105 min)
++              if (!isDraw) {
++                // Decisive result in extra time - game over
++                printf("[API] 1st extra time ended with winner - game over\n");
++                match->GameOver();
++                return;
++              }
++              // Still drawn - continue to 2nd extra time
++              printf("[API] 1st extra time ended in draw, continuing to 2nd extra time\n");
++            }
++            
++            if (buffer.endingPhase == e_MatchPhase_2ndExtraTime) {
++              // End of 2nd extra time (120 min)
++              // Penalties would be configured separately; for now game ends here
++              printf("[API] 2nd extra time complete - game over\n");
++              match->GameOver();
++              return;
+             }
+-            if (match->GetMatchPhase() == e_MatchPhase_Penalties) {
++            
++            if (buffer.endingPhase == e_MatchPhase_Penalties) {
++              // Penalties complete
++              printf("[API] Penalties complete - game over\n");
+               match->GameOver();
+               return;
+             }
++            
++            // Not a terminal phase - signal phase change for UI
+             match->sig_OnMatchPhaseChange(match);
+           }
+           buffer.endPhase = false;
+diff --git a/src/onthepitch/referee.hpp b/src/onthepitch/referee.hpp
+index 1cc9f0e..0fcf804 100644
+--- a/src/onthepitch/referee.hpp
++++ b/src/onthepitch/referee.hpp
+@@ -21,6 +21,7 @@ struct RefereeBuffer {
+   Vector3 restartPos;
+   Player* taker;
+   bool endPhase;
++  e_MatchPhase endingPhase;  // Phase that is ending (set before SetMatchPhase)
+ };
+ 
+ struct Foul {
+diff --git a/src/onthepitch/teamAIcontroller.cpp b/src/onthepitch/teamAIcontroller.cpp
+index 5efff58..408b340 100644
+--- a/src/onthepitch/teamAIcontroller.cpp
++++ b/src/onthepitch/teamAIcontroller.cpp
+@@ -247,8 +247,10 @@ void TeamAIController::Process() {
+       const Vector3 ballPos = match->GetBall()->Predict(0).Get2D();
+       const float primaryDistance =
+           primaryDefender ? (primaryDefender->GetPosition() - ballPos).GetLength() : 1000.0f;
+-      const float pressureSetting =
+-          team->GetTeamData()->GetTactics().userProperties.GetReal("team_pressure", 0.5f);
++      // CPU-only maximum pressure: use 1.0 for pure CPU teams, else retain DB setting.
++      const float pressureSetting = (team->GetHumanGamerCount() == 0)
++          ? 1.0f  // Max supported value for CPU teams
++          : team->GetTeamData()->GetTactics().userProperties.GetReal("team_pressure", 0.5f);
+       const float territory =
+           AITactics::GetAttackingTerritory(ballPos.coords[0], team->GetSide(), pitchHalfW);
+       if (AITactics::ShouldStartZonePressure(pressureSetting, territory, primaryDistance))
+@@ -1201,8 +1203,10 @@ void TeamAIController::ApplyTeamPressure() {
+ }
+ 
+ void TeamAIController::ApplyZonePressure() {
+-  const float pressureSetting =
+-      team->GetTeamData()->GetTactics().userProperties.GetReal("team_pressure", 0.5f);
++  // CPU-only maximum pressure: use 1.0 for pure CPU teams, else retain DB setting.
++  const float pressureSetting = (team->GetHumanGamerCount() == 0)
++      ? 1.0f  // Max supported value for CPU teams
++      : team->GetTeamData()->GetTactics().userProperties.GetReal("team_pressure", 0.5f);
+   zonePressureActive = true;
+   zonePressureEndTime_ms =
+       match->GetActualTime_ms() + AITactics::GetZonePressureDuration_ms(pressureSetting);

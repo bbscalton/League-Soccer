@@ -5,6 +5,13 @@ on:
     branches: [ "main", "master", "copilot/**", "claude/**", "cursor/**" ]
   pull_request:
     branches: [ "main", "master" ]
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        description: 'Run with debug logging'
+        required: false
+        default: 'false'
+        type: boolean
 
 permissions:
   contents: read

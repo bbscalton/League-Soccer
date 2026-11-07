@@ -145,10 +145,16 @@ public:
   void StartSetPiece() { inSetPiece = true; }
   void StopSetPiece() { inSetPiece = false; }
   bool IsInSetPiece() const { return inSetPiece; }
+
+  // GPU warmup: returns true when enough frames have rendered to ensure
+  // all textures are uploaded and shaders compiled. The referee waits for
+  // this before blowing the whistle to start the match.
+  bool IsWarmedUp() const { return warmupFramesRendered >= kWarmupFramesRequired; }
   Referee* GetReferee() { return referee.get(); }
   Officials* GetOfficials() { return officials.get(); }
   const RefereeBuffer& GetRefereeBuffer() { return referee->GetBuffer(); };
 
+  bool IsGameOver() const { return gameOver; }
   void SetGoalScored(bool onOff) {
     if (onOff == false)
       ballIsInGoal = false;
@@ -384,6 +390,11 @@ protected:
   std::atomic<int> addedMinutes{-1};
   int TotalCards() const;
   bool gameOverSignalled = false;
+
+  // GPU warmup: delay referee whistle until enough frames have rendered.
+  // This ensures all textures are uploaded and shaders compiled before gameplay.
+  int warmupFramesRendered = 0;
+  static constexpr int kWarmupFramesRequired = 30;  // ~300ms at 100fps / ~500ms at 60fps
 
   boost::intrusive_ptr<Node> fullbodyNode;
   std::map<Vector3, Vector3> colorCoords;

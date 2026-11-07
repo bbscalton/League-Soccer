@@ -247,8 +247,10 @@ void TeamAIController::Process() {
       const Vector3 ballPos = match->GetBall()->Predict(0).Get2D();
       const float primaryDistance =
           primaryDefender ? (primaryDefender->GetPosition() - ballPos).GetLength() : 1000.0f;
-      const float pressureSetting =
-          team->GetTeamData()->GetTactics().userProperties.GetReal("team_pressure", 0.5f);
+      // CPU-only maximum pressure: use 1.0 for pure CPU teams, else retain DB setting.
+      const float pressureSetting = (team->GetHumanGamerCount() == 0)
+          ? 1.0f  // Max supported value for CPU teams
+          : team->GetTeamData()->GetTactics().userProperties.GetReal("team_pressure", 0.5f);
       const float territory =
           AITactics::GetAttackingTerritory(ballPos.coords[0], team->GetSide(), pitchHalfW);
       if (AITactics::ShouldStartZonePressure(pressureSetting, territory, primaryDistance))
@@ -1201,8 +1203,10 @@ void TeamAIController::ApplyTeamPressure() {
 }
 
 void TeamAIController::ApplyZonePressure() {
-  const float pressureSetting =
-      team->GetTeamData()->GetTactics().userProperties.GetReal("team_pressure", 0.5f);
+  // CPU-only maximum pressure: use 1.0 for pure CPU teams, else retain DB setting.
+  const float pressureSetting = (team->GetHumanGamerCount() == 0)
+      ? 1.0f  // Max supported value for CPU teams
+      : team->GetTeamData()->GetTactics().userProperties.GetReal("team_pressure", 0.5f);
   zonePressureActive = true;
   zonePressureEndTime_ms =
       match->GetActualTime_ms() + AITactics::GetZonePressureDuration_ms(pressureSetting);

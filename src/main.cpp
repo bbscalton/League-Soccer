@@ -102,10 +102,14 @@ static LONG WINAPI CustomCrashHandler(EXCEPTION_POINTERS* pExceptionInfo) {
 #define SDL_MAIN_HANDLED
 #endif
 #include "SDL2/SDL_ttf.h"
+#include "api/api_server.hpp"
+#include "api/league_api.hpp"
 #include "base/log.hpp"
 #include "base/math/bluntmath.hpp"
 #include "base/utils.hpp"
+#include "data/matchdata.hpp"
 #include "framework/scheduler.hpp"
+#include "hid/apigamepad.hpp"
 #include "hid/scriptedgamepad.hpp"
 #include "main.hpp"
 #include "managers/resourcemanagerpool.hpp"
@@ -130,6 +134,9 @@ using namespace blunted;
 
 GraphicsSystem* graphicsSystem;
 AudioSystem* audioSystem;
+
+// API server for external programmatic control
+static std::unique_ptr<api::APIServer> g_apiServer;
 
 std::shared_ptr<Scene2D> scene2D;
 std::shared_ptr<Scene3D> scene3D;
@@ -265,6 +272,16 @@ bool IsReleaseVersion() {
     return false;
   else
     return true;
+}
+
+bool IsAPIMode() {
+  return GetConfiguration()->GetBool("api_mode", false);
+}
+
+bool HasAPIClients() {
+  // When an external API client is connected, it controls match cycling.
+  // The game should NOT auto-rematch; wait for client reset commands instead.
+  return g_apiServer && g_apiServer->HasConnectedClients();
 }
 
 bool Verbose() {
@@ -549,12 +566,61 @@ int main(int argc, const char** argv) {
 
   Initialize(*config);
 
-  srand(time(nullptr));
+  // Check for API mode seed override
+  int64_t apiSeed = config->GetInt("api_seed", -1);
+  if (apiSeed >= 0) {
+    srand(static_cast<unsigned int>(apiSeed));
+    printf("[API] Using deterministic seed: %lld\n", (long long)apiSeed);
+  } else {
+    srand(time(nullptr));
+  }
   rand();        // mingw32? buggy compiler? first value seems bogus
   randomseed();  // for the boost random
   fastrandomseed();
 
   int timeStep_ms = config->GetInt("physics_frametime_ms", 10);
+
+  // Initialize API server if enabled
+  bool apiModeEnabled = config->GetBool("api_mode", false);
+  printf("[MAIN] api_mode = %s\n", apiModeEnabled ? "true" : "false");
+  fflush(stdout);
+
+  if (apiModeEnabled) {
+    int apiPort = config->GetInt("api_port", api::kDefaultPort);
+    printf("[MAIN] Starting API server on port %d\n", apiPort);
+    fflush(stdout);
+    g_apiServer = std::make_unique<api::APIServer>();
+
+    // Set up league data callbacks
+    g_apiServer->SetListLeaguesCallback([]() { return api::ListLeagues(); });
+    g_apiServer->SetListFixturesCallback(
+        [](int league_id) { return api::ListFixtures(league_id); });
+    g_apiServer->SetListTeamsCallback([](int league_id) { return api::ListTeams(league_id); });
+    g_apiServer->SetCreateLeagueCallback(
+        [](const std::string& json, int& league_id, std::string& error) {
+          return api::CreateLeague(json, league_id, error);
+        });
+    g_apiServer->SetCreateTeamCallback(
+        [](const std::string& json, int& team_id, std::string& error) {
+          return api::CreateTeam(json, team_id, error);
+        });
+    g_apiServer->SetCreateFixtureCallback([](const std::string& json, std::string& error) {
+      int fixture_id;
+      return api::CreateFixture(json, fixture_id, error);
+    });
+    g_apiServer->SetImportLeagueDataCallback([](const std::string& json, std::string& error) {
+      return api::ImportLeagueData(json, error);
+    });
+    g_apiServer->SetExportLeagueDataCallback([]() { return api::ExportLeagueData(); });
+
+    if (g_apiServer->Start(apiPort)) {
+      api::SetAPIServer(g_apiServer.get());
+      printf("[API] External control API server started on port %d\n", apiPort);
+    } else {
+      printf("[API] Failed to start API server on port %d\n", apiPort);
+      g_apiServer.reset();
+    }
+  }
 
   // database
 
@@ -702,6 +768,20 @@ int main(int argc, const char** argv) {
            controllers.size());
   }
 
+  // API mode: add API gamepads for external control of both teams
+  if (g_apiServer) {
+    auto homeGamepad = g_apiServer->GetTeamGamepad(0);
+    auto awayGamepad = g_apiServer->GetTeamGamepad(1);
+    if (homeGamepad) {
+      controllers.push_back(homeGamepad.get());
+      printf("[API] Home team API gamepad added\n");
+    }
+    if (awayGamepad) {
+      controllers.push_back(awayGamepad.get());
+      printf("[API] Away team API gamepad added\n");
+    }
+  }
+
   // sequences
 
   std::mutex
@@ -728,6 +808,149 @@ int main(int argc, const char** argv) {
       std::shared_ptr<MenuTask>(new MenuTask(kMenuAspectRatio, 0, defaultFont, defaultOutlineFont));
   if (controllers.size() > 1)
     ApplyMenuJoyButtons(dynamic_cast<HIDGamepad*>(controllers.at(1)));
+
+  // Set up API callbacks now that game/menu tasks exist
+  if (g_apiServer) {
+    // Reset callback: set up match data and start a match
+    g_apiServer->SetResetCallback([](const api::ResetParams& params, std::string& error) -> bool {
+      printf("[API] Reset requested: seed=%d, home=%d, away=%d, duration=%.1f min\n", params.seed,
+             params.home_team_id, params.away_team_id, params.match_duration_minutes);
+
+      // Check that tasks are available
+      if (!gameTask) {
+        error = "Game task not initialized";
+        printf("[API] Reset failed: gameTask is null\n");
+        return false;
+      }
+      if (!menuTask) {
+        error = "Menu task not initialized";
+        printf("[API] Reset failed: menuTask is null\n");
+        return false;
+      }
+
+      // Queue reset request for main thread execution to avoid race conditions.
+      // The API callback runs on a network thread; destroying/creating match
+      // resources here would race with render/physics threads accessing them.
+      // RequestReset queues the work and blocks until the main thread completes it.
+      printf("[API] Queueing reset for main thread execution...\n");
+      return gameTask->RequestReset(params.seed, params.home_team_id, params.away_team_id,
+                                    params.match_duration_minutes, error);
+    });
+
+    // Step callback: return current match state (the game loop ticks automatically)
+    g_apiServer->SetStepCallback([](api::StepResult& result) -> bool {
+      if (!gameTask) {
+        printf("[API] Step failed: gameTask is null\n");
+        return false;
+      }
+
+      Match* match = gameTask->GetMatch();
+      if (!match) {
+        printf("[API] Step failed: no match active (GetMatch() returned null)\n");
+        return false;
+      }
+
+      e_MatchPhase phase = match->GetMatchPhase();
+      // Match is done when GameOver() has been called by the referee.
+      // This handles all end conditions: regulation win/draw, extra time, penalties.
+      result.done = match->IsGameOver();
+      result.observation.score_home = match->GetScore(0);
+      result.observation.score_away = match->GetScore(1);
+      result.observation.match_time_ms = match->GetMatchTime_ms();
+      result.observation.in_play = match->IsInPlay();
+      result.observation.period = static_cast<int>(phase);
+
+      return true;
+    });
+
+    // Observe callback: get current match state
+    g_apiServer->SetGetObservationCallback([](api::Observation& obs) -> bool {
+      if (!gameTask) {
+        printf("[API] Observe failed: gameTask is null\n");
+        return false;
+      }
+
+      Match* match = gameTask->GetMatch();
+      if (!match) {
+        printf("[API] Observe failed: no match active (GetMatch() returned null)\n");
+        return false;
+      }
+
+      Ball* ball = match->GetBall();
+      if (!ball) {
+        printf("[API] Observe failed: ball is null\n");
+        return false;
+      }
+
+      // Ball state
+      obs.ball.position_x = ball->GetBallGeom()->GetPosition().coords[0];
+      obs.ball.position_y = ball->GetBallGeom()->GetPosition().coords[1];
+      obs.ball.position_z = ball->GetBallGeom()->GetPosition().coords[2];
+      obs.ball.velocity_x = ball->GetMovement().coords[0];
+      obs.ball.velocity_y = ball->GetMovement().coords[1];
+      obs.ball.velocity_z = ball->GetMovement().coords[2];
+      obs.ball.owned_team = match->GetLastTouchTeamID();
+
+      // Game state
+      obs.score_home = match->GetScore(0);
+      obs.score_away = match->GetScore(1);
+      obs.match_time_ms = match->GetMatchTime_ms();
+      obs.in_play = match->IsInPlay();
+      obs.in_set_piece = match->IsInSetPiece();
+      obs.goal_scored = match->IsGoalScored();
+      obs.last_touch_team = match->GetLastTouchTeamID();
+      obs.period = static_cast<int>(match->GetMatchPhase());
+
+      // Player observations for home team
+      std::vector<Player*> homePlayers;
+      match->GetActiveTeamPlayers(0, homePlayers);
+      for (Player* player : homePlayers) {
+        api::PlayerObservation pobs;
+        pobs.team_id = 0;
+        pobs.player_id = player->GetID();
+        Vector3 pos = player->GetPosition();
+        pobs.position_x = pos.coords[0];
+        pobs.position_y = pos.coords[1];
+        Vector3 dir = player->GetDirectionVec();
+        pobs.direction = atan2(dir.coords[1], dir.coords[0]);
+        pobs.has_ball = (player == match->GetDesignatedPossessionPlayer());
+        pobs.is_active = player->IsActive();
+        obs.home_players.push_back(pobs);
+      }
+
+      // Player observations for away team
+      std::vector<Player*> awayPlayers;
+      match->GetActiveTeamPlayers(1, awayPlayers);
+      for (Player* player : awayPlayers) {
+        api::PlayerObservation pobs;
+        pobs.team_id = 1;
+        pobs.player_id = player->GetID();
+        Vector3 pos = player->GetPosition();
+        pobs.position_x = pos.coords[0];
+        pobs.position_y = pos.coords[1];
+        Vector3 dir = player->GetDirectionVec();
+        pobs.direction = atan2(dir.coords[1], dir.coords[0]);
+        pobs.has_ball = (player == match->GetDesignatedPossessionPlayer());
+        pobs.is_active = player->IsActive();
+        obs.away_players.push_back(pobs);
+      }
+
+      return true;
+    });
+
+    // Quit callback - schedule on main thread for safe teardown during loading
+    g_apiServer->SetQuitCallback([]() {
+      printf("[API] Quit requested\n");
+      if (gameTask) {
+        gameTask->RequestQuit();
+      } else {
+        // No game task yet - direct quit is safe
+        EnvironmentManager::GetInstance().SignalQuit();
+      }
+    });
+
+    printf("[API] Match control callbacks registered\n");
+  }
 
   // Smoke tests: plug in an SDL virtual gamepad so gamepad menus and hot-plug
   // handling run against a real HIDGamepad without hardware. It arrives
@@ -819,6 +1042,13 @@ int main(int argc, const char** argv) {
 
   delete db;
   delete config;
+
+  // Shutdown API server
+  if (g_apiServer) {
+    g_apiServer->Stop();
+    api::SetAPIServer(nullptr);
+    g_apiServer.reset();
+  }
 
   Exit();
 

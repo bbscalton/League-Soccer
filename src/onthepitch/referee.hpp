@@ -21,6 +21,7 @@ struct RefereeBuffer {
   Vector3 restartPos;
   Player* taker;
   bool endPhase;
+  e_MatchPhase endingPhase;  // Phase that is ending (set before SetMatchPhase)
 };
 
 struct Foul {

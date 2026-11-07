@@ -28,6 +28,8 @@ public:
   int GetShots(int teamID) { return shots[teamID]; }
   void AddShotOnTarget(int teamID) { shotsOnTarget[teamID] += 1; }
   int GetShotsOnTarget(int teamID) { return shotsOnTarget[teamID]; }
+  void AddSave(int teamID) { saves[teamID] += 1; }
+  int GetSaves(int teamID) { return saves[teamID]; }
 
   // pass tracking
   void AddPassAttempt(int teamID) {
@@ -70,6 +72,7 @@ protected:
   float possession60seconds;  // -600 to 600 for possession of team 1 / 2 respectively
   int shots[2];
   int shotsOnTarget[2];
+  int saves[2];
 
   int passAttempts[2];
   int passesCompleted[2];

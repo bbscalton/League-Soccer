@@ -311,9 +311,37 @@ GameOverPage::~GameOverPage() {}
 void GameOverPage::Process() {
   Gui2Page::Process();
 
+  // After GoRematch() queues a rematch, match pointer is nulled to prevent
+  // dangling access. ProcessPendingRematch() will delete the old match.
+  if (!match) return;
+
   // menu_smoke_quit_delay_ms keeps the page up longer for frame captures.
   const unsigned long quitDelay_ms = static_cast<unsigned long>(
       GetConfiguration()->GetInt("menu_smoke_quit_delay_ms", kMenuSmokeQuitDelay_ms));
+
+  // API mode: when an external client is connected, it controls match cycling.
+  // Don't auto-rematch; the client will send reset commands for new matches.
+  // When no client is connected, auto-start a new match for standalone testing.
+  if (!autoQuitTriggered && IsAPIMode() &&
+      EnvironmentManager::GetInstance().GetTime_ms() >= pageCreatedTime_ms + quitDelay_ms) {
+    autoQuitTriggered = true;
+    printf("[API] Match complete: %s %i - %i %s\n",
+           match->GetTeam(0)->GetTeamData()->GetName().c_str(),
+           match->GetMatchData()->GetGoalCount(0), match->GetMatchData()->GetGoalCount(1),
+           match->GetTeam(1)->GetTeamData()->GetName().c_str());
+    
+    if (HasAPIClients()) {
+      // External client connected - it controls match cycling via reset commands.
+      // Stay on game over screen until client sends reset or quit.
+      printf("[API] External client connected - waiting for reset command (no auto-rematch)\n");
+    } else {
+      // No client connected - standalone API mode, auto-rematch for testing.
+      printf("[API] Auto-starting new match (computer vs computer, no human input)\n");
+      GoRematch();
+    }
+    return;
+  }
+
   if (!autoQuitTriggered && MenuSmokeFullMatchEnabled() &&
       EnvironmentManager::GetInstance().GetTime_ms() >= pageCreatedTime_ms + quitDelay_ms) {
     autoQuitTriggered = true;
@@ -356,15 +384,21 @@ void GameOverPage::ProcessWindowingEvent(WindowingEvent* event) {
 }
 
 void GameOverPage::GoRematch() {
-  windowManager->GetPagePath()->Clear();
+  // Capture team IDs before the match is destroyed.
+  int team0 = GetMenuTask()->GetTeamID(0);
+  int team1 = GetMenuTask()->GetTeamID(1);
 
-  GetGameTask()->Action(e_GameTaskMessage_StopMatch);
-  GetGameTask()->Action(e_GameTaskMessage_StartMatch);
+  // CRITICAL: Null out match pointer and mark triggered BEFORE queueing rematch.
+  // ProcessPendingRematch() will delete the old match on the next game tick,
+  // making our pointer dangling. Setting it null prevents heap corruption from
+  // Process() accessing freed memory.
+  match = nullptr;
+  autoQuitTriggered = true;
 
-  this->Exit();
-  Properties properties;
-  windowManager->GetPageFactory()->CreatePage((int)e_PageID_Game, properties, 0);
-  delete this;
+  // Queue rematch for main thread execution to avoid GUI thread race conditions.
+  // The main thread will stop the match, clean up menu scene, create new MatchData,
+  // and start the new match safely during ProcessPhase.
+  GetGameTask()->RequestRematch(team0, team1);
 }
 
 void GameOverPage::GoMainMenu() {

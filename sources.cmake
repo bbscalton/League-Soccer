@@ -487,12 +487,29 @@ set(HID_HEADERS
    src/hid/ihidevice.hpp
    src/hid/keyboard.hpp
    src/hid/scriptedgamepad.hpp
+   src/hid/apigamepad.hpp
 )
 
 set(HID_SOURCES
    src/hid/gamepad.cpp
    src/hid/keyboard.cpp
    src/hid/scriptedgamepad.cpp
+)
+
+set(API_HEADERS
+   src/api/api_protocol.hpp
+   src/api/api_server.hpp
+   src/api/match_api.hpp
+   src/api/league_api.hpp
+   src/hid/apigamepad.hpp
+)
+
+set(API_SOURCES
+   src/api/api_protocol.cpp
+   src/api/api_server.cpp
+   src/api/match_api.cpp
+   src/api/league_api.cpp
+   src/hid/apigamepad.cpp
 )
 
 set(MENU_HEADERS

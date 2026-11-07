@@ -109,9 +109,13 @@ void LoadingMatchPage::Process() {
 
   if (!sentStartGameSignal) {
     sentStartGameSignal = true;
+    printf("[API] LoadingMatchPage::Process() - sending start game signal\n");
+    fflush(stdout);
     // Allow one rendered loading frame before the heavier match setup begins.
     EnvironmentManager::GetInstance().Pause_ms(100);
     GetMenuTask()->SetMenuAction(e_MenuAction_Game);
+    printf("[API] LoadingMatchPage::Process() - menuAction set to e_MenuAction_Game\n");
+    fflush(stdout);
   }
 }
 
